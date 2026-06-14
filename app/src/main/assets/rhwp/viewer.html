@@ -51,9 +51,27 @@
       if (window.AndroidHwpRenderer && AndroidHwpRenderer.onRendered) AndroidHwpRenderer.onRendered(String(pageCount));
     }
 
+    function loadWasmBytes() {
+      return new Promise((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        request.open('GET', 'rhwp_bg.wasm', true);
+        request.responseType = 'arraybuffer';
+        request.onload = () => {
+          if (request.status === 0 || (request.status >= 200 && request.status < 300)) {
+            resolve(request.response);
+          } else {
+            reject(new Error('WASM asset load failed: HTTP ' + request.status));
+          }
+        };
+        request.onerror = () => reject(new Error('WASM asset load failed'));
+        request.send();
+      });
+    }
+
     async function boot() {
       try {
-        await init({ module_or_path: './rhwp_bg.wasm' });
+        const wasmBytes = await loadWasmBytes();
+        await init({ module_or_path: wasmBytes });
         ready = true;
         setStatus('HWP 렌더링 엔진 준비 완료');
         if (pending) {

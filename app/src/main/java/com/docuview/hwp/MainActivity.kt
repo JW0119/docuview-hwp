@@ -10,17 +10,20 @@ import android.graphics.Typeface
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.text.TextUtils
 import android.util.Base64
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
-import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -31,13 +34,34 @@ import java.util.Locale
 import java.util.zip.ZipInputStream
 
 class MainActivity : Activity() {
-    private lateinit var root: LinearLayout
+    private lateinit var root: FrameLayout
+    private lateinit var homeBox: LinearLayout
+    private lateinit var viewerLayer: FrameLayout
+    private lateinit var viewerContent: FrameLayout
+    private lateinit var topBar: LinearLayout
+    private lateinit var bottomBar: LinearLayout
+    private lateinit var titleView: TextView
+    private lateinit var pageView: TextView
+    private lateinit var prevButton: Button
+    private lateinit var nextButton: Button
     private lateinit var recentBox: LinearLayout
-    private lateinit var documentBox: LinearLayout
-    private lateinit var searchInput: EditText
-    private var currentText: String = ""
+
     private var currentName: String = ""
+    private var currentText: String = ""
     private var currentBytesBase64: String = ""
+    private var currentMode: ViewerMode = ViewerMode.NONE
+    private var controlsVisible = true
+
+    private var pdfRenderer: PdfRenderer? = null
+    private var pdfPfd: ParcelFileDescriptor? = null
+    private var pdfPageIndex = 0
+    private var pdfPageCount = 0
+    private var pdfImageView: ImageView? = null
+
+    private var activeWebView: WebView? = null
+    private var rhwpPage = 1
+    private var rhwpPageCount = 0
+
     private val recentPrefs by lazy { getSharedPreferences("recent_documents", Context.MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,51 +75,106 @@ class MainActivity : Activity() {
         handleIntent(intent)
     }
 
+    override fun onDestroy() {
+        cleanupActiveDocument()
+        super.onDestroy()
+    }
+
+    override fun onBackPressed() {
+        if (viewerLayer.visibility == View.VISIBLE) showHome() else super.onBackPressed()
+    }
+
     private fun buildUi() {
-        root = LinearLayout(this).apply {
+        root = FrameLayout(this).apply { setBackgroundColor(COLOR_APP_BG) }
+        buildHome()
+        buildViewer()
+        root.addView(homeBox, FrameLayout.LayoutParams(-1, -1))
+        root.addView(viewerLayer, FrameLayout.LayoutParams(-1, -1))
+        viewerLayer.visibility = View.GONE
+        setContentView(root)
+    }
+
+    private fun buildHome() {
+        homeBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(18), dp(20), dp(24))
-            setBackgroundColor(Color.rgb(247, 249, 255))
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(24), dp(34), dp(24), dp(24))
+            setBackgroundColor(COLOR_APP_BG)
         }
-
-        root.addView(text("Doc Viewer", 31f, Color.rgb(26, 30, 50), bold = true))
-        root.addView(text("HWPX · PDF · TXT · Office 문서를 한 앱에서 빠르게 확인", 14f, Color.rgb(82, 88, 116)).pad(bottom = 14))
-
-        val openButton = Button(this).apply {
+        homeBox.addView(text("DocuView", 32f, COLOR_INK, bold = true).pad(bottom = 6))
+        homeBox.addView(text("HWP · HWPX · PDF 문서를 빠르게 여는 모바일 뷰어", 14f, COLOR_MUTED).pad(bottom = 22))
+        homeBox.addView(Button(this).apply {
             text = "문서 열기"
+            textSize = 17f
             setAllCaps(false)
             setOnClickListener { openDocumentPicker() }
+        }, LinearLayout.LayoutParams(-1, dp(54)))
+        recentBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(28), 0, 0)
         }
-        root.addView(openButton)
-        root.addView(statusCard("지원 형식", "PDF 미리보기 · HWPX 본문/표 텍스트 · DOCX/XLSX/PPTX 텍스트 · TXT/MD/CSV · HWP 변환 슬롯"))
-
-        searchInput = EditText(this).apply {
-            hint = "현재 문서에서 검색"
-            setSingleLine(true)
-            visibility = View.GONE
-        }
-        val searchButton = Button(this).apply {
-            text = "검색"
-            setAllCaps(false)
-            setOnClickListener { searchInCurrentDocument() }
-        }
-        val searchRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            visibility = View.GONE
-            tag = "searchRow"
-            addView(searchInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            addView(searchButton)
-        }
-        root.addView(searchRow)
-
-        recentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(recentBox)
-
-        documentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(documentBox)
-
+        homeBox.addView(recentBox, LinearLayout.LayoutParams(-1, -2))
         renderRecent()
-        setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    private fun buildViewer() {
+        viewerLayer = FrameLayout(this).apply {
+            setBackgroundColor(COLOR_VIEWER_BG)
+            setOnClickListener { toggleControls() }
+        }
+        viewerContent = FrameLayout(this).apply { setBackgroundColor(COLOR_VIEWER_BG) }
+        viewerLayer.addView(viewerContent, FrameLayout.LayoutParams(-1, -1))
+
+        topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setBackgroundColor(Color.argb(232, 255, 255, 255))
+            elevation = dp(3).toFloat()
+        }
+        topBar.addView(ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_revert)
+            setBackgroundColor(Color.TRANSPARENT)
+            setColorFilter(COLOR_INK)
+            contentDescription = "뒤로"
+            setOnClickListener { showHome() }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        titleView = text("", 15f, COLOR_INK, bold = true).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+        }
+        topBar.addView(titleView, LinearLayout.LayoutParams(0, -2, 1f))
+        topBar.addView(ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_upload)
+            setBackgroundColor(Color.TRANSPARENT)
+            setColorFilter(COLOR_INK)
+            contentDescription = "문서 열기"
+            setOnClickListener { openDocumentPicker() }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        viewerLayer.addView(topBar, FrameLayout.LayoutParams(-1, dp(60), Gravity.TOP))
+
+        bottomBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(8), dp(14), dp(10))
+            setBackgroundColor(Color.argb(235, 255, 255, 255))
+            elevation = dp(3).toFloat()
+        }
+        prevButton = Button(this).apply {
+            text = "이전"
+            setAllCaps(false)
+            setOnClickListener { previousPage() }
+        }
+        nextButton = Button(this).apply {
+            text = "다음"
+            setAllCaps(false)
+            setOnClickListener { nextPage() }
+        }
+        pageView = text("", 14f, COLOR_INK, bold = true).apply { gravity = Gravity.CENTER }
+        bottomBar.addView(prevButton, LinearLayout.LayoutParams(dp(92), dp(46)))
+        bottomBar.addView(pageView, LinearLayout.LayoutParams(0, -2, 1f))
+        bottomBar.addView(nextButton, LinearLayout.LayoutParams(dp(92), dp(46)))
+        viewerLayer.addView(bottomBar, FrameLayout.LayoutParams(-1, dp(66), Gravity.BOTTOM))
     }
 
     private fun openDocumentPicker() {
@@ -128,136 +207,293 @@ class MainActivity : Activity() {
     }
 
     private fun render(uri: Uri) {
-        documentBox.removeAllViews()
-        currentText = ""
+        cleanupActiveDocument()
         currentName = displayName(uri)
+        titleView.text = currentName
+        viewerContent.removeAllViews()
+        homeBox.visibility = View.GONE
+        viewerLayer.visibility = View.VISIBLE
+        setControlsVisible(true)
         rememberRecent(currentName, uri)
         renderRecent()
-        setSearchVisible(false)
-
-        val meta = metadata(uri, currentName)
-        documentBox.addView(sectionTitle("열린 문서"))
-        documentBox.addView(statusCard(currentName, meta))
-
         val lower = currentName.lowercase(Locale.ROOT)
+        showLoading("문서를 여는 중…")
         when {
             lower.endsWith(".pdf") || mime(uri) == "application/pdf" -> renderPdf(uri)
-            lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".csv") || (mime(uri)?.startsWith("text/") == true) -> renderPlainText(uri)
             lower.endsWith(".hwp") || lower.endsWith(".hwpx") -> renderRhwp(uri, currentName)
+            lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".csv") || (mime(uri)?.startsWith("text/") == true) -> renderPlainText(uri)
             lower.endsWith(".docx") -> renderZipXmlDocument(uri, XmlFamily.DOCX)
             lower.endsWith(".xlsx") -> renderZipXmlDocument(uri, XmlFamily.XLSX)
             lower.endsWith(".pptx") -> renderZipXmlDocument(uri, XmlFamily.PPTX)
-            isLegacyOffice(lower) -> renderRoadmap("레거시 Office 문서", "DOC/XLS/PPT는 바이너리 형식입니다. 다음 단계에서 LibreOffice/Collabora 변환 서버 또는 Android 내 변환 엔진을 연결합니다.")
-            else -> renderRoadmap("알 수 없는 문서 형식", "파일을 열었지만 내장 렌더러가 아직 연결되지 않았습니다. PDF, HWPX, DOCX, XLSX, PPTX, TXT 계열을 우선 지원합니다.")
+            else -> showViewerMessage("이 형식은 아직 앱 안에서 바로 볼 수 없습니다.", canPage = false)
         }
     }
 
-    private fun renderPlainText(uri: Uri) {
-        val result = runCatching {
-            contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
-        }
-        result.onSuccess { showExtractedText("텍스트 문서", it) }
-            .onFailure { showError("텍스트 읽기 실패", it) }
+    private fun showHome() {
+        cleanupActiveDocument()
+        viewerContent.removeAllViews()
+        viewerLayer.visibility = View.GONE
+        homeBox.visibility = View.VISIBLE
+        currentMode = ViewerMode.NONE
+    }
+
+    private fun showLoading(message: String) {
+        viewerContent.removeAllViews()
+        viewerContent.addView(text(message, 15f, COLOR_MUTED).apply { gravity = Gravity.CENTER }, FrameLayout.LayoutParams(-1, -1))
+        pageView.text = ""
+        setPagingEnabled(false, false)
     }
 
     private fun renderPdf(uri: Uri) {
         val result = runCatching {
-            val pfd = contentResolver.openFileDescriptor(uri, "r") ?: error("파일을 열 수 없습니다")
-            val renderer = PdfRenderer(pfd)
-            val pageCount = renderer.pageCount
-            val bitmaps = mutableListOf<Bitmap>()
-            val renderCount = minOf(pageCount, 30)
-            for (i in 0 until renderCount) {
-                val page = renderer.openPage(i)
-                val maxWidth = 1800
-                val scale = maxOf(1, maxWidth / maxOf(1, page.width))
-                val bitmap = Bitmap.createBitmap(page.width * scale, page.height * scale, Bitmap.Config.ARGB_8888)
+            pdfPfd = contentResolver.openFileDescriptor(uri, "r") ?: error("open failed")
+            pdfRenderer = PdfRenderer(pdfPfd!!)
+            pdfPageCount = pdfRenderer!!.pageCount
+            pdfPageIndex = 0
+        }
+        result.onSuccess {
+            currentMode = ViewerMode.PDF
+            viewerContent.removeAllViews()
+            val surface = FrameLayout(this).apply {
+                setPadding(dp(12), dp(76), dp(12), dp(76))
+                setBackgroundColor(COLOR_VIEWER_BG)
+            }
+            pdfImageView = ImageView(this).apply {
+                adjustViewBounds = true
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setBackgroundColor(Color.WHITE)
+                elevation = dp(2).toFloat()
+            }
+            surface.addView(pdfImageView, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+            viewerContent.addView(surface, FrameLayout.LayoutParams(-1, -1))
+            renderPdfPage(0)
+        }.onFailure { showViewerMessage("문서를 열 수 없습니다. 다른 파일을 선택해 주세요.", canPage = false) }
+    }
+
+    private fun renderPdfPage(index: Int) {
+        val renderer = pdfRenderer ?: return
+        if (index !in 0 until renderer.pageCount) return
+        runCatching {
+            renderer.openPage(index).use { page ->
+                val maxWidth = (resources.displayMetrics.widthPixels - dp(24)).coerceAtLeast(320)
+                val maxHeight = (resources.displayMetrics.heightPixels - dp(152)).coerceAtLeast(420)
+                val scale = minOf(maxWidth.toFloat() / page.width.toFloat(), maxHeight.toFloat() / page.height.toFloat())
+                val targetWidth = (page.width * scale).toInt().coerceAtLeast(1)
+                val targetHeight = (page.height * scale).toInt().coerceAtLeast(1)
+                val bitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
                 bitmap.eraseColor(Color.WHITE)
                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                page.close()
-                bitmaps += bitmap
+                pdfImageView?.setImageBitmap(bitmap)
             }
-            renderer.close(); pfd.close()
-            Pair(bitmaps, pageCount)
-        }
-        result.onSuccess { (bitmaps, pageCount) ->
-            documentBox.addView(sectionTitle("PDF 원본 비율 렌더링"))
-            val note = if (pageCount > bitmaps.size) "총 ${pageCount}쪽 중 ${bitmaps.size}쪽 표시" else "총 ${pageCount}쪽 표시"
-            documentBox.addView(text(note, 13f, Color.rgb(85, 90, 118)).pad(bottom = 8))
-            bitmaps.forEachIndexed { idx, bitmap ->
-                documentBox.addView(text("${idx + 1}쪽", 12f, Color.rgb(90, 96, 130)).pad(top = 10, bottom = 4))
-                documentBox.addView(ImageView(this).apply {
-                    setImageBitmap(bitmap)
-                    adjustViewBounds = true
-                    setBackgroundColor(Color.WHITE)
-                })
-            }
-        }.onFailure { showError("PDF 렌더링 실패", it) }
+            pdfPageIndex = index
+            updatePageLabel(index + 1, pdfPageCount)
+        }.onFailure { showViewerMessage("이 페이지를 표시할 수 없습니다.", canPage = pdfPageCount > 1) }
     }
 
     private fun renderRhwp(uri: Uri, fileName: String) {
         val result = runCatching {
-            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("파일을 읽을 수 없습니다")
+            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("read failed")
             currentBytesBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            bytes.size
         }
-        result.onSuccess { size ->
-            currentText = ""
-            setSearchVisible(false)
-            documentBox.addView(sectionTitle("HWP/HWPX 원본 비율 렌더링"))
-            documentBox.addView(statusCard("rhwp 렌더링 엔진", "Rust/WASM 기반 rhwp 엔진으로 문서를 로드합니다. 파일 크기: ${humanSize(size.toLong())}"))
+        result.onSuccess {
+            currentMode = ViewerMode.RHWP
+            viewerContent.removeAllViews()
+            rhwpPage = 1
+            rhwpPageCount = 0
             val webView = WebView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(760))
+                layoutParams = FrameLayout.LayoutParams(-1, -1)
+                setPadding(0, dp(60), 0, dp(66))
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
-                settings.allowFileAccess = true
+                settings.allowFileAccess = false
                 settings.allowContentAccess = true
-                webViewClient = WebViewClient()
+                settings.loadWithOverviewMode = true
+                settings.useWideViewPort = true
+                settings.builtInZoomControls = true
+                settings.displayZoomControls = false
+                settings.mediaPlaybackRequiresUserGesture = true
                 webChromeClient = WebChromeClient()
+                webViewClient = WebViewClient()
                 addJavascriptInterface(RhwpBridge(), "AndroidDocViewer")
                 loadDataWithBaseURL("https://docviewer.local/", rhwpHtml(fileName), "text/html", "UTF-8", null)
             }
-            documentBox.addView(webView)
-        }.onFailure { err ->
-            showError("rhwp 렌더링 준비 실패", err)
+            activeWebView = webView
+            viewerContent.addView(webView, FrameLayout.LayoutParams(-1, -1))
+            pageView.text = "준비 중"
+            setPagingEnabled(false, false)
+        }.onFailure {
             if (fileName.lowercase(Locale.ROOT).endsWith(".hwpx")) renderZipXmlDocument(uri, XmlFamily.HWPX)
+            else showViewerMessage("문서를 열 수 없습니다. HWPX 또는 PDF로 다시 시도해 주세요.", canPage = false)
         }
     }
 
     inner class RhwpBridge {
         @JavascriptInterface fun fileBase64(): String = currentBytesBase64
         @JavascriptInterface fun fileName(): String = currentName
+        @JavascriptInterface fun onPageInfo(page: Int, count: Int) {
+            runOnUiThread {
+                rhwpPage = page.coerceAtLeast(1)
+                rhwpPageCount = count.coerceAtLeast(0)
+                updatePageLabel(rhwpPage, rhwpPageCount)
+            }
+        }
+        @JavascriptInterface fun onReady() {
+            runOnUiThread {
+                if (rhwpPageCount <= 0) pageView.text = "보기 모드"
+                setPagingEnabled(true, true)
+            }
+        }
+        @JavascriptInterface fun onRenderFailed() {
+            runOnUiThread { showViewerMessage("문서를 표시할 수 없습니다. 다른 파일을 선택해 주세요.", canPage = false) }
+        }
     }
 
     private fun rhwpHtml(fileName: String): String = """
-        <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
         <style>
-          html,body,#editor{margin:0;width:100%;height:100%;background:#eef2fb;font-family:sans-serif;}
-          #status{padding:12px;color:#24304f;font-size:14px;background:#fff;border-bottom:1px solid #dfe5f2;}
-          #editor{height:calc(100% - 44px);} .error{color:#9b1c1c;white-space:pre-wrap;}
-        </style></head><body><div id="status">렌더링 엔진 로딩 중…</div><div id="editor"></div>
+          html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#eef2f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+          #viewer{position:fixed;inset:0;overflow:auto;background:#eef2f7;box-sizing:border-box;padding:72px 10px 76px;}
+          #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#667085;background:#eef2f7;font-size:14px;z-index:9999;}
+          [class*='toolbar'],[class*='Toolbar'],[class*='menubar'],[class*='Menu'],[class*='sidebar'],[class*='Sidebar'],[class*='ribbon'],[class*='Ribbon'],[class*='statusbar'],[class*='StatusBar'],[class*='panel'],[class*='Panel']{display:none!important;visibility:hidden!important;height:0!important;min-height:0!important;}
+          button,input,select,textarea,[role='button'],[contenteditable='true']{display:none!important;pointer-events:none!important;}
+          canvas,svg{max-width:100%!important;height:auto!important;background:#fff!important;box-shadow:0 8px 24px rgba(30,41,59,.12);margin:0 auto 16px!important;display:block!important;}
+          [class*='page'],[data-page]{box-shadow:0 8px 24px rgba(30,41,59,.12)!important;margin:0 auto 16px!important;background:#fff!important;max-width:100%!important;}
+          *{caret-color:transparent!important;-webkit-user-select:none!important;user-select:none!important;}
+        </style></head><body><div id="viewer"></div><div id="loading">문서를 여는 중…</div>
         <script type="module">
-          const status = document.getElementById('status');
+          const viewerEl = document.getElementById('viewer');
+          const loading = document.getElementById('loading');
+          let api = null, pages = [], currentPage = 0;
           function b64ToArrayBuffer(b64){ const bin=atob(b64); const len=bin.length; const bytes=new Uint8Array(len); for(let i=0;i<len;i++) bytes[i]=bin.charCodeAt(i); return bytes.buffer; }
-          try {
-            const mod = await import('https://esm.sh/@rhwp/editor');
-            const editor = await mod.createEditor('#editor', { width:'100%', height:'100%' });
-            const buffer = b64ToArrayBuffer(AndroidDocViewer.fileBase64());
-            const result = await editor.loadFile(buffer, AndroidDocViewer.fileName() || ${fileName.jsString()});
-            status.textContent = 'rhwp 렌더링 완료 · ' + ((result && result.pageCount) ? result.pageCount + '쪽' : '페이지 계산 완료');
-          } catch(e) {
-            status.className='error';
-            status.textContent = 'rhwp 렌더링 실패: ' + (e && e.stack ? e.stack : e);
+          function hideChrome(){
+            document.querySelectorAll("[class*='toolbar'],[class*='Toolbar'],[class*='menubar'],[class*='Menu'],[class*='sidebar'],[class*='Sidebar'],[class*='ribbon'],[class*='Ribbon'],[class*='statusbar'],[class*='StatusBar'],button,input,select,textarea,[role='button']").forEach(e=>e.remove());
+            document.querySelectorAll('[contenteditable=true]').forEach(e=>e.setAttribute('contenteditable','false'));
           }
+          function findPages(){
+            const selectors=['[data-page]','.page','.rhwp-page','[class*=page]','canvas','svg'];
+            for(const s of selectors){ const found=[...document.querySelectorAll(s)].filter(e=>e.offsetWidth>80&&e.offsetHeight>80); if(found.length) return found; }
+            return [];
+          }
+          function sendPage(){ AndroidDocViewer.onPageInfo(Math.min(currentPage+1, Math.max(pages.length,1)), pages.length); }
+          function refreshPages(){ hideChrome(); pages=findPages(); if(pages.length){ currentPage=Math.min(currentPage,pages.length-1); sendPage(); } }
+          function showPage(i){
+            refreshPages();
+            if(api){
+              if(i>currentPage && typeof api.nextPage==='function'){ api.nextPage(); currentPage=i; sendPage(); return; }
+              if(i<currentPage && typeof api.prevPage==='function'){ api.prevPage(); currentPage=i; sendPage(); return; }
+              if(typeof api.goToPage==='function'){ currentPage=Math.max(0,i); api.goToPage(currentPage); sendPage(); return; }
+              if(typeof api.setPage==='function'){ currentPage=Math.max(0,i); api.setPage(currentPage); sendPage(); return; }
+            }
+            if(!pages.length) return;
+            currentPage=Math.max(0,Math.min(i,pages.length-1));
+            pages[currentPage].scrollIntoView({behavior:'smooth',block:'start',inline:'nearest'});
+            sendPage();
+          }
+          window.DocViewerNextPage=()=>showPage(currentPage+1);
+          window.DocViewerPrevPage=()=>showPage(currentPage-1);
+          try{
+            const mod=await import('https://esm.sh/@rhwp/editor');
+            const create=mod.createViewer||mod.createReadOnlyEditor||mod.createEditor;
+            if(!create) throw new Error('factory missing');
+            api=await create('#viewer',{width:'100%',height:'100%',readOnly:true,editable:false,toolbar:false,menubar:false,statusbar:false,sidebar:false,pageMode:true,mode:'viewer'});
+            const buffer=b64ToArrayBuffer(AndroidDocViewer.fileBase64());
+            const result=await api.loadFile(buffer, AndroidDocViewer.fileName() || ${fileName.jsString()});
+            loading.remove(); hideChrome();
+            const count=(result&&result.pageCount)||api.pageCount||(typeof api.getPageCount==='function'?api.getPageCount():0)||0;
+            if(count>0){ pages=new Array(count).fill(null); AndroidDocViewer.onPageInfo(1,count); }
+            AndroidDocViewer.onReady();
+            setTimeout(refreshPages,300); setTimeout(refreshPages,900); setTimeout(refreshPages,1800);
+          }catch(e){ AndroidDocViewer.onRenderFailed(); }
         </script></body></html>
     """.trimIndent()
 
+    private fun previousPage() {
+        when (currentMode) {
+            ViewerMode.PDF -> if (pdfPageIndex > 0) renderPdfPage(pdfPageIndex - 1)
+            ViewerMode.RHWP -> activeWebView?.evaluateJavascript("window.DocViewerPrevPage && window.DocViewerPrevPage();", null)
+            else -> Unit
+        }
+    }
+
+    private fun nextPage() {
+        when (currentMode) {
+            ViewerMode.PDF -> if (pdfPageIndex + 1 < pdfPageCount) renderPdfPage(pdfPageIndex + 1)
+            ViewerMode.RHWP -> activeWebView?.evaluateJavascript("window.DocViewerNextPage && window.DocViewerNextPage();", null)
+            else -> Unit
+        }
+    }
+
+    private fun updatePageLabel(page: Int, count: Int) {
+        pageView.text = if (count > 0) "$page / $count" else "보기 모드"
+        setPagingEnabled(page > 1 || currentMode == ViewerMode.RHWP, count == 0 || page < count || currentMode == ViewerMode.RHWP)
+    }
+
+    private fun setPagingEnabled(prev: Boolean, next: Boolean) {
+        prevButton.isEnabled = prev
+        nextButton.isEnabled = next
+        prevButton.alpha = if (prev) 1f else .38f
+        nextButton.alpha = if (next) 1f else .38f
+    }
+
+    private fun toggleControls() = setControlsVisible(!controlsVisible)
+
+    private fun setControlsVisible(visible: Boolean) {
+        controlsVisible = visible
+        topBar.visibility = if (visible) View.VISIBLE else View.GONE
+        bottomBar.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+
+    private fun cleanupActiveDocument() {
+        runCatching { pdfRenderer?.close() }
+        runCatching { pdfPfd?.close() }
+        pdfRenderer = null
+        pdfPfd = null
+        pdfImageView = null
+        pdfPageIndex = 0
+        pdfPageCount = 0
+        activeWebView?.let {
+            runCatching { it.stopLoading(); it.loadUrl("about:blank"); it.removeAllViews(); it.destroy() }
+        }
+        activeWebView = null
+        currentBytesBase64 = ""
+        currentText = ""
+    }
+
+    private fun renderPlainText(uri: Uri) {
+        val result = runCatching { contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty() }
+        result.onSuccess { showTextViewer(it) }.onFailure { showViewerMessage("문서를 열 수 없습니다.", canPage = false) }
+    }
+
     private fun renderZipXmlDocument(uri: Uri, family: XmlFamily) {
         val result = runCatching { extractZipXmlText(uri, family) }
-        result.onSuccess { extracted ->
-            if (extracted.isBlank()) renderRoadmap(family.label, "문서를 열었지만 추출 가능한 본문 텍스트를 찾지 못했습니다. 암호화, 이미지 기반 문서, 특수 구조일 수 있습니다.")
-            else showExtractedText(family.label, extracted)
-        }.onFailure { showError("${family.label} 읽기 실패", it) }
+        result.onSuccess { if (it.isBlank()) showViewerMessage("표시할 수 있는 본문을 찾지 못했습니다.", false) else showTextViewer(it) }
+            .onFailure { showViewerMessage("문서를 열 수 없습니다.", false) }
+    }
+
+    private fun showTextViewer(textValue: String) {
+        currentMode = ViewerMode.TEXT
+        currentText = textValue
+        viewerContent.removeAllViews()
+        val scroll = ScrollView(this).apply { setPadding(dp(20), dp(76), dp(20), dp(78)); setBackgroundColor(COLOR_VIEWER_BG) }
+        scroll.addView(text(textValue.take(MAX_TEXT_CHARS), 16f, COLOR_INK).apply {
+            setBackgroundColor(Color.WHITE)
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            setLineSpacing(7f, 1.05f)
+        })
+        viewerContent.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        pageView.text = "텍스트 보기"
+        setPagingEnabled(false, false)
+    }
+
+    private fun showViewerMessage(message: String, canPage: Boolean) {
+        currentMode = ViewerMode.NONE
+        viewerContent.removeAllViews()
+        viewerContent.addView(text(message, 16f, COLOR_MUTED).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+        }, FrameLayout.LayoutParams(-1, -1))
+        pageView.text = ""
+        setPagingEnabled(canPage, canPage)
     }
 
     private fun extractZipXmlText(uri: Uri, family: XmlFamily): String {
@@ -266,9 +502,7 @@ class MainActivity : Activity() {
             while (true) {
                 val entry = zip.nextEntry ?: break
                 if (!entry.isDirectory && family.accept(entry.name)) {
-                    val bytes = zip.readEntryBytes(maxBytes = 2_000_000)
-                    val xml = bytes.toString(Charsets.UTF_8)
-                    val text = xmlToReadableText(xml)
+                    val text = zip.readEntryBytes(2_000_000).toString(Charsets.UTF_8).xmlToReadableText()
                     if (text.isNotBlank()) parts += text
                 }
                 zip.closeEntry()
@@ -278,114 +512,55 @@ class MainActivity : Activity() {
     }
 
     private fun ZipInputStream.readEntryBytes(maxBytes: Int): ByteArray {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        var total = 0
-        while (true) {
-            val read = read(buffer)
-            if (read <= 0) break
-            total += read
-            if (total > maxBytes) break
-            out.write(buffer, 0, read)
-        }
+        val out = ByteArrayOutputStream(); val buffer = ByteArray(8192); var total = 0
+        while (true) { val read = read(buffer); if (read <= 0) break; total += read; if (total > maxBytes) break; out.write(buffer, 0, read) }
         return out.toByteArray()
     }
 
-    private fun xmlToReadableText(xml: String): String {
-        return xml
-            .replace(Regex("<(w:p|hp:p|p:sp|a:p|row|tr)[^>]*>", RegexOption.IGNORE_CASE), "\n")
-            .replace(Regex("</(w:p|hp:p|p:sp|a:p|row|tr)>", RegexOption.IGNORE_CASE), "\n")
-            .replace(Regex("<(w:tab|hp:tab)[^>]*/>", RegexOption.IGNORE_CASE), "\t")
-            .replace(Regex("<[^>]+>"), " ")
-            .decodeXmlEntities()
-            .replace(Regex("[ \\t\\x0B\\f\\r]+"), " ")
-            .replace(Regex(" *\\n *"), "\n")
-            .replace(Regex("\\n{3,}"), "\n\n")
-            .lines()
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .joinToString("\n")
-            .trim()
-    }
+    private fun String.xmlToReadableText(): String = this
+        .replace(Regex("<(w:p|hp:p|p:sp|a:p|row|tr)[^>]*>", RegexOption.IGNORE_CASE), "\n")
+        .replace(Regex("</(w:p|hp:p|p:sp|a:p|row|tr)>", RegexOption.IGNORE_CASE), "\n")
+        .replace(Regex("<(w:tab|hp:tab)[^>]*/>", RegexOption.IGNORE_CASE), "\t")
+        .replace(Regex("<[^>]+>"), " ")
+        .decodeXmlEntities()
+        .replace(Regex("[ \\t\\x0B\\f\\r]+"), " ")
+        .replace(Regex(" *\\n *"), "\n")
+        .replace(Regex("\\n{3,}"), "\n\n")
+        .lines().map { it.trim() }.filter { it.isNotBlank() }.joinToString("\n").trim()
 
-    private fun String.decodeXmlEntities(): String = this
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-
-    private fun showExtractedText(label: String, extracted: String) {
-        currentText = extracted
-        setSearchVisible(extracted.isNotBlank())
-        documentBox.addView(sectionTitle(label))
-        documentBox.addView(statusCard("추출 결과", "${extracted.length}자 추출 · 문서 내 검색 가능"))
-        documentBox.addView(text(extracted, 15f, Color.rgb(38, 42, 58)).pad(top = 8))
-    }
-
-    private fun renderRoadmap(title: String, body: String) {
-        currentText = ""
-        setSearchVisible(false)
-        documentBox.addView(sectionTitle(title))
-        documentBox.addView(statusCard("렌더링 엔진 연결 필요", body))
-    }
-
-    private fun showError(title: String, error: Throwable) {
-        currentText = ""
-        setSearchVisible(false)
-        documentBox.addView(sectionTitle(title))
-        documentBox.addView(statusCard("오류", error.message ?: error::class.java.simpleName, error = true))
-    }
-
-    private fun setSearchVisible(visible: Boolean) {
-        searchInput.visibility = if (visible) View.VISIBLE else View.GONE
-        (root.findViewWithTag<View>("searchRow"))?.visibility = if (visible) View.VISIBLE else View.GONE
-    }
-
-    private fun searchInCurrentDocument() {
-        val q = searchInput.text?.toString()?.trim().orEmpty()
-        if (q.isBlank()) {
-            Toast.makeText(this, "검색어를 입력하세요", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val count = Regex(Regex.escape(q), RegexOption.IGNORE_CASE).findAll(currentText).count()
-        Toast.makeText(this, "'$q' ${count}건", Toast.LENGTH_SHORT).show()
-    }
+    private fun String.decodeXmlEntities(): String = this.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", "\"").replace("&apos;", "'")
 
     private fun renderRecent() {
         recentBox.removeAllViews()
         val items = recentItems()
-        if (items.isEmpty()) return
-        recentBox.addView(sectionTitle("최근 문서"))
+        if (items.isEmpty()) {
+            recentBox.addView(text("최근 문서가 없습니다.", 14f, COLOR_MUTED))
+            return
+        }
+        recentBox.addView(text("최근 문서", 18f, COLOR_INK, bold = true).pad(bottom = 10))
         items.forEach { item ->
-            val row = TextView(this).apply {
-                text = "• ${item.name}"
-                textSize = 14f
+            recentBox.addView(TextView(this).apply {
+                text = item.name
+                textSize = 15f
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.MIDDLE
-                setTextColor(Color.rgb(52, 72, 140))
-                setPadding(0, dp(4), 0, dp(4))
+                setTextColor(COLOR_LINK)
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                setBackgroundColor(Color.WHITE)
                 setOnClickListener { render(Uri.parse(item.uri)) }
-            }
-            recentBox.addView(row)
+            }, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(8)) })
         }
     }
 
     private fun rememberRecent(name: String, uri: Uri) {
         val line = "${name.sanitize()}|||$uri"
         val merged = (listOf(line) + recentPrefs.getString(KEY_RECENT, "").orEmpty().split("\n"))
-            .filter { it.contains("|||") }
-            .distinctBy { it.substringAfter("|||") }
-            .take(8)
+            .filter { it.contains("|||") }.distinctBy { it.substringAfter("|||") }.take(8)
         recentPrefs.edit().putString(KEY_RECENT, merged.joinToString("\n")).apply()
     }
 
-    private fun recentItems(): List<RecentItem> {
-        return recentPrefs.getString(KEY_RECENT, "").orEmpty().split("\n")
-            .mapNotNull {
-                val parts = it.split("|||", limit = 2)
-                if (parts.size == 2) RecentItem(parts[0], parts[1]) else null
-            }
+    private fun recentItems(): List<RecentItem> = recentPrefs.getString(KEY_RECENT, "").orEmpty().split("\n").mapNotNull {
+        val parts = it.split("|||", limit = 2); if (parts.size == 2) RecentItem(parts[0], parts[1]) else null
     }
 
     private fun displayName(uri: Uri): String {
@@ -397,45 +572,12 @@ class MainActivity : Activity() {
                     val idx = cursor!!.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (idx >= 0) return cursor!!.getString(idx)
                 }
-            } finally {
-                cursor?.close()
-            }
+            } finally { cursor?.close() }
         }
         return uri.lastPathSegment?.substringAfterLast('/') ?: uri.toString()
     }
 
-    private fun metadata(uri: Uri, name: String): String {
-        val type = mime(uri) ?: "unknown"
-        val size = size(uri)?.let { humanSize(it) } ?: "unknown size"
-        return "형식: ${extension(name).uppercase(Locale.ROOT).ifBlank { type }} · MIME: $type · 크기: $size"
-    }
-
     private fun mime(uri: Uri): String? = contentResolver.getType(uri)
-
-    private fun size(uri: Uri): Long? {
-        var cursor: Cursor? = null
-        return try {
-            cursor = contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)
-            if (cursor?.moveToFirst() == true) {
-                val idx = cursor!!.getColumnIndex(OpenableColumns.SIZE)
-                if (idx >= 0 && !cursor!!.isNull(idx)) cursor!!.getLong(idx) else null
-            } else null
-        } finally {
-            cursor?.close()
-        }
-    }
-
-    private fun extension(name: String): String = name.substringAfterLast('.', "")
-
-    private fun humanSize(bytes: Long): String {
-        if (bytes < 1024) return "$bytes B"
-        val kb = bytes / 1024.0
-        if (kb < 1024) return String.format(Locale.US, "%.1f KB", kb)
-        val mb = kb / 1024.0
-        return String.format(Locale.US, "%.1f MB", mb)
-    }
-
-    private fun isLegacyOffice(lower: String): Boolean = lower.endsWith(".doc") || lower.endsWith(".xls") || lower.endsWith(".ppt")
 
     private fun supportedMimeTypes() = arrayOf(
         "application/pdf", "text/*", "text/plain", "text/markdown", "text/csv",
@@ -443,62 +585,30 @@ class MainActivity : Activity() {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
-        "application/vnd.oasis.opendocument.text", "application/vnd.oasis.opendocument.spreadsheet", "application/vnd.oasis.opendocument.presentation"
+        "application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"
     )
 
-    private fun sectionTitle(value: String): TextView = text(value, 17f, Color.rgb(34, 38, 62), bold = true).pad(top = 18, bottom = 8)
-
-    private fun statusCard(title: String, body: String, error: Boolean = false): TextView {
-        return text("$title\n$body", 14f, if (error) Color.rgb(120, 30, 30) else Color.rgb(54, 60, 88)).apply {
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            setBackgroundColor(if (error) Color.rgb(255, 238, 238) else Color.WHITE)
-        }.pad(top = 8, bottom = 8)
+    private fun text(value: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(color)
+        if (bold) typeface = Typeface.DEFAULT_BOLD
+        setLineSpacing(2f, 1.0f)
     }
 
-    private fun text(value: String, size: Float, color: Int, bold: Boolean = false): TextView {
-        return TextView(this).apply {
-            text = value
-            textSize = size
-            setTextColor(color)
-            if (bold) typeface = Typeface.DEFAULT_BOLD
-            setLineSpacing(2f, 1.0f)
-        }
-    }
-
-    private fun TextView.pad(top: Int = 0, bottom: Int = 0): TextView {
-        setPadding(paddingLeft, dp(top), paddingRight, dp(bottom))
-        return this
-    }
-
+    private fun TextView.pad(top: Int = 0, bottom: Int = 0): TextView { setPadding(paddingLeft, dp(top), paddingRight, dp(bottom)); return this }
     private fun String.sanitize(): String = replace("\n", " ").replace("|||", " ").trim()
     private fun String.jsString(): String = "'" + replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n") + "'"
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private data class RecentItem(val name: String, val uri: String)
+    private enum class ViewerMode { NONE, PDF, RHWP, TEXT }
 
     private enum class XmlFamily(val label: String) {
-        HWPX("HWPX 텍스트 보기") {
-            override fun accept(name: String): Boolean {
-                val n = name.lowercase(Locale.ROOT)
-                return n.endsWith(".xml") && (n.contains("contents/") || n.contains("section") || n.contains("content"))
-            }
-        },
-        DOCX("Word 문서 텍스트 보기") {
-            override fun accept(name: String): Boolean = name.lowercase(Locale.ROOT) == "word/document.xml"
-        },
-        XLSX("Excel 문서 텍스트 보기") {
-            override fun accept(name: String): Boolean {
-                val n = name.lowercase(Locale.ROOT)
-                return n == "xl/sharedstrings.xml" || (n.startsWith("xl/worksheets/") && n.endsWith(".xml"))
-            }
-        },
-        PPTX("PowerPoint 문서 텍스트 보기") {
-            override fun accept(name: String): Boolean {
-                val n = name.lowercase(Locale.ROOT)
-                return n.startsWith("ppt/slides/") && n.endsWith(".xml")
-            }
-        };
+        HWPX("HWPX") { override fun accept(name: String): Boolean { val n = name.lowercase(Locale.ROOT); return n.endsWith(".xml") && (n.contains("contents/") || n.contains("section") || n.contains("content")) } },
+        DOCX("Word") { override fun accept(name: String): Boolean = name.lowercase(Locale.ROOT) == "word/document.xml" },
+        XLSX("Excel") { override fun accept(name: String): Boolean { val n = name.lowercase(Locale.ROOT); return n == "xl/sharedstrings.xml" || (n.startsWith("xl/worksheets/") && n.endsWith(".xml")) } },
+        PPTX("PowerPoint") { override fun accept(name: String): Boolean { val n = name.lowercase(Locale.ROOT); return n.startsWith("ppt/slides/") && n.endsWith(".xml") } };
         abstract fun accept(name: String): Boolean
     }
 
@@ -506,5 +616,10 @@ class MainActivity : Activity() {
         private const val REQUEST_OPEN = 10
         private const val KEY_RECENT = "items"
         private const val MAX_TEXT_CHARS = 120_000
+        private val COLOR_APP_BG = Color.rgb(245, 247, 252)
+        private val COLOR_VIEWER_BG = Color.rgb(238, 242, 247)
+        private val COLOR_INK = Color.rgb(24, 31, 46)
+        private val COLOR_MUTED = Color.rgb(93, 104, 126)
+        private val COLOR_LINK = Color.rgb(45, 84, 176)
     }
 }

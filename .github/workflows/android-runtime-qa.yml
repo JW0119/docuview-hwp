@@ -112,6 +112,7 @@ jobs:
           PY
 
       - name: Run emulator, install, launch, screenshot, swipe
+        timeout-minutes: 18
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}

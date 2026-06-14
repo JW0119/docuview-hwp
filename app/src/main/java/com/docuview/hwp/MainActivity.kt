@@ -13,8 +13,15 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.text.TextUtils
+import android.util.Base64
 import android.view.Gravity
 import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -49,6 +56,7 @@ class MainActivity : Activity() {
     private var pdfPageCount = 0
     private var pdfImageView: ImageView? = null
 
+    private var hwpWebView: WebView? = null
 
     private val recentPrefs by lazy { getSharedPreferences("recent_documents", Context.MODE_PRIVATE) }
 
@@ -283,6 +291,12 @@ class MainActivity : Activity() {
         pdfRenderer = null
         pdfPfd = null
         pdfImageView = null
+        hwpWebView?.let { webView ->
+            runCatching { webView.stopLoading() }
+            runCatching { webView.removeAllViews() }
+            runCatching { webView.destroy() }
+        }
+        hwpWebView = null
         pdfPageIndex = 0
         pdfPageCount = 0
         currentText = ""
@@ -302,15 +316,58 @@ class MainActivity : Activity() {
     }
 
     private fun renderBinaryHwp(uri: Uri) {
-        val result = runCatching { extractBinaryHwpText(uri) }
-        result.onSuccess {
-            if (it.isBlank()) {
-                showViewerMessage("HWP 바이너리 문서를 열었지만 표시할 수 있는 본문을 찾지 못했습니다. HWPX 또는 PDF 변환본으로 열어 주세요.", false)
-            } else {
-                showTextViewer(it)
+        val result = runCatching { readDocumentBytes(uri, MAX_HWP_RENDER_BYTES) }
+        result.onSuccess { bytes ->
+            if (bytes.isEmpty()) {
+                showViewerMessage("HWP 문서가 비어 있거나 읽을 수 없습니다.", false)
+                return@onSuccess
             }
+            currentMode = ViewerMode.HWP_ENGINE
+            viewerContent.removeAllViews()
+            val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            val safeName = currentName.replace("\\", "\\\\").replace("'", "\\'")
+            val webView = WebView(this).apply {
+                setBackgroundColor(Color.WHITE)
+                isClickable = true
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.allowFileAccess = true
+                settings.allowContentAccess = true
+                settings.allowFileAccessFromFileURLs = true
+                settings.allowUniversalAccessFromFileURLs = true
+                settings.cacheMode = WebSettings.LOAD_DEFAULT
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                webChromeClient = WebChromeClient()
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        super.onPageFinished(view, url)
+                        val script = "window.renderHwpBase64('$encoded', '$safeName');"
+                        view.evaluateJavascript(script, null)
+                    }
+                }
+                addJavascriptInterface(HwpRenderBridge(uri), "AndroidHwpRenderer")
+                setOnTouchListener { _, event -> handleViewerTouch(event) }
+            }
+            hwpWebView = webView
+            viewerContent.addView(webView, FrameLayout.LayoutParams(-1, -1))
+            webView.loadUrl("file:///android_asset/rhwp/viewer.html")
         }.onFailure {
-            showViewerMessage("HWP 바이너리 문서를 열 수 없습니다. HWPX 또는 PDF 변환본으로 열어 주세요.", false)
+            val fallback = runCatching { extractBinaryHwpText(uri) }.getOrDefault("")
+            if (fallback.isNotBlank()) showTextViewer(fallback)
+            else showViewerMessage("HWP 문서를 렌더링할 수 없습니다.", false)
+        }
+    }
+
+    inner class HwpRenderBridge(private val sourceUri: Uri) {
+        @JavascriptInterface fun onStatus(message: String) { }
+        @JavascriptInterface fun onRendered(pageCount: String) { }
+        @JavascriptInterface fun onFailed(message: String) {
+            runOnUiThread {
+                val fallback = runCatching { extractBinaryHwpText(sourceUri) }.getOrDefault("")
+                if (fallback.isNotBlank()) showTextViewer(fallback)
+                else showViewerMessage("HWP 렌더링 엔진이 문서를 표시하지 못했습니다.\n$message", false)
+            }
         }
     }
 
@@ -462,6 +519,23 @@ class MainActivity : Activity() {
         error("cannot open document uri: $uri")
     }
 
+    private fun readDocumentBytes(uri: Uri, maxBytes: Int): ByteArray {
+        openDocumentStream(uri).use { input ->
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            var total = 0
+            while (true) {
+                val remaining = maxBytes - total
+                if (remaining <= 0) break
+                val read = input.read(buffer, 0, minOf(buffer.size, remaining))
+                if (read <= 0) break
+                out.write(buffer, 0, read)
+                total += read
+            }
+            return out.toByteArray()
+        }
+    }
+
     private fun ZipInputStream.readEntryBytes(maxBytes: Int): ByteArray {
         val out = ByteArrayOutputStream(); val buffer = ByteArray(8192); var total = 0
         while (true) { val read = read(buffer); if (read <= 0) break; total += read; if (total > maxBytes) break; out.write(buffer, 0, read) }
@@ -553,7 +627,7 @@ class MainActivity : Activity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private data class RecentItem(val name: String, val uri: String)
-    private enum class ViewerMode { NONE, PDF, TEXT }
+    private enum class ViewerMode { NONE, PDF, TEXT, HWP_ENGINE }
 
     private enum class XmlFamily(val label: String) {
         HWPX("HWPX") { override fun accept(name: String): Boolean { val n = name.lowercase(Locale.ROOT); return n.endsWith(".xml") && (n.contains("contents/") || n.contains("section") || n.contains("content")) } },
@@ -568,6 +642,7 @@ class MainActivity : Activity() {
         private const val KEY_RECENT = "items"
         private const val MAX_TEXT_CHARS = 120_000
         private const val MAX_BINARY_HWP_BYTES = 4_000_000
+        private const val MAX_HWP_RENDER_BYTES = 24_000_000
         private val COLOR_APP_BG = Color.rgb(245, 247, 252)
         private val COLOR_VIEWER_BG = Color.rgb(238, 242, 247)
         private val COLOR_INK = Color.rgb(24, 31, 46)

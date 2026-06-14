@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <style>
+    html, body { margin:0; padding:0; width:100%; min-height:100%; background:#f3f4f6; color:#111827; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Noto Sans CJK KR', 'Noto Sans KR', sans-serif; }
+    #status { box-sizing:border-box; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:#6b7280; font-size:15px; line-height:1.5; white-space:pre-line; }
+    #viewer { box-sizing:border-box; width:100%; min-height:100vh; padding:10px 0 18px; display:flex; flex-direction:column; align-items:center; gap:14px; }
+    .page { width: calc(100vw - 20px); max-width: 980px; background:white; box-shadow:0 1px 8px rgba(15,23,42,.18); overflow:hidden; }
+    .page svg { display:block; width:100%; height:auto; background:white; }
+  </style>
+</head>
+<body>
+  <div id="status">HWP 렌더링 엔진 준비 중…</div>
+  <div id="viewer" hidden></div>
+  <script type="module">
+    import init, { HwpDocument } from './rhwp.js';
+
+    let ready = false;
+    let pending = null;
+    let ctx = null;
+    let lastFont = '';
+
+    globalThis.measureTextWidth = (font, text) => {
+      if (!ctx) ctx = document.createElement('canvas').getContext('2d');
+      if (font !== lastFont) { ctx.font = font; lastFont = font; }
+      return ctx.measureText(text || '').width;
+    };
+
+    const status = document.getElementById('status');
+    const viewer = document.getElementById('viewer');
+
+    function bytesFromBase64(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    function setStatus(message) {
+      viewer.hidden = true;
+      status.hidden = false;
+      status.textContent = message;
+      if (window.AndroidHwpRenderer && AndroidHwpRenderer.onStatus) AndroidHwpRenderer.onStatus(message);
+    }
+
+    function setRendered(pageCount) {
+      status.hidden = true;
+      viewer.hidden = false;
+      if (window.AndroidHwpRenderer && AndroidHwpRenderer.onRendered) AndroidHwpRenderer.onRendered(String(pageCount));
+    }
+
+    async function boot() {
+      try {
+        await init({ module_or_path: './rhwp_bg.wasm' });
+        ready = true;
+        setStatus('HWP 렌더링 엔진 준비 완료');
+        if (pending) {
+          const p = pending;
+          pending = null;
+          await window.renderHwpBase64(p.base64, p.name);
+        }
+      } catch (error) {
+        const message = 'HWP 렌더링 엔진 초기화 실패\n' + (error && error.message ? error.message : String(error));
+        setStatus(message);
+        if (window.AndroidHwpRenderer && AndroidHwpRenderer.onFailed) AndroidHwpRenderer.onFailed(message);
+      }
+    }
+
+    window.renderHwpBase64 = async (base64, name) => {
+      if (!ready) {
+        pending = { base64, name };
+        setStatus('HWP 렌더링 엔진 로딩 중…');
+        return;
+      }
+      try {
+        setStatus((name || '문서') + '\n렌더링 중…');
+        viewer.innerHTML = '';
+        const doc = new HwpDocument(bytesFromBase64(base64));
+        const total = Math.max(1, Number(doc.pageCount ? doc.pageCount() : 1));
+        const maxPages = Math.min(total, 20);
+        for (let i = 0; i < maxPages; i++) {
+          const svg = doc.renderPageSvg(i);
+          const page = document.createElement('div');
+          page.className = 'page';
+          page.innerHTML = svg;
+          viewer.appendChild(page);
+        }
+        if (maxPages < total) {
+          const more = document.createElement('div');
+          more.style.cssText = 'padding:14px 18px 24px;color:#6b7280;font-size:14px;text-align:center;';
+          more.textContent = `${maxPages} / ${total} 페이지 표시됨`;
+          viewer.appendChild(more);
+        }
+        setRendered(total);
+      } catch (error) {
+        const message = 'HWP 렌더링 실패\n' + (error && error.stack ? error.stack : String(error));
+        setStatus(message);
+        if (window.AndroidHwpRenderer && AndroidHwpRenderer.onFailed) AndroidHwpRenderer.onFailed(message);
+      }
+    };
+
+    boot();
+  </script>
+</body>
+</html>

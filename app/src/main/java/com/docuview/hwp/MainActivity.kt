@@ -12,8 +12,13 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.text.TextUtils
+import android.util.Base64
 import android.view.Gravity
 import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -32,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var searchInput: EditText
     private var currentText: String = ""
     private var currentName: String = ""
+    private var currentBytesBase64: String = ""
     private val recentPrefs by lazy { getSharedPreferences("recent_documents", Context.MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -137,11 +143,10 @@ class MainActivity : Activity() {
         when {
             lower.endsWith(".pdf") || mime(uri) == "application/pdf" -> renderPdf(uri)
             lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".csv") || (mime(uri)?.startsWith("text/") == true) -> renderPlainText(uri)
-            lower.endsWith(".hwpx") -> renderZipXmlDocument(uri, XmlFamily.HWPX)
+            lower.endsWith(".hwp") || lower.endsWith(".hwpx") -> renderRhwp(uri, currentName)
             lower.endsWith(".docx") -> renderZipXmlDocument(uri, XmlFamily.DOCX)
             lower.endsWith(".xlsx") -> renderZipXmlDocument(uri, XmlFamily.XLSX)
             lower.endsWith(".pptx") -> renderZipXmlDocument(uri, XmlFamily.PPTX)
-            lower.endsWith(".hwp") -> renderRoadmap("HWP 바이너리", "HWP 파일은 인식했습니다. 완전 조판 렌더링은 rhwp/WASM 또는 서버 변환 엔진 연결 단계가 필요합니다. 현재 버전은 오해를 피하기 위해 미지원이 아니라 ‘변환 엔진 대기’로 표시합니다.")
             isLegacyOffice(lower) -> renderRoadmap("레거시 Office 문서", "DOC/XLS/PPT는 바이너리 형식입니다. 다음 단계에서 LibreOffice/Collabora 변환 서버 또는 Android 내 변환 엔진을 연결합니다.")
             else -> renderRoadmap("알 수 없는 문서 형식", "파일을 열었지만 내장 렌더러가 아직 연결되지 않았습니다. PDF, HWPX, DOCX, XLSX, PPTX, TXT 계열을 우선 지원합니다.")
         }
@@ -160,23 +165,92 @@ class MainActivity : Activity() {
             val pfd = contentResolver.openFileDescriptor(uri, "r") ?: error("파일을 열 수 없습니다")
             val renderer = PdfRenderer(pfd)
             val pageCount = renderer.pageCount
-            val page = renderer.openPage(0)
-            val scale = 2
-            val bitmap = Bitmap.createBitmap(page.width * scale, page.height * scale, Bitmap.Config.ARGB_8888)
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            page.close(); renderer.close(); pfd.close()
-            Pair(bitmap, pageCount)
+            val bitmaps = mutableListOf<Bitmap>()
+            val renderCount = minOf(pageCount, 30)
+            for (i in 0 until renderCount) {
+                val page = renderer.openPage(i)
+                val maxWidth = 1800
+                val scale = maxOf(1, maxWidth / maxOf(1, page.width))
+                val bitmap = Bitmap.createBitmap(page.width * scale, page.height * scale, Bitmap.Config.ARGB_8888)
+                bitmap.eraseColor(Color.WHITE)
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+                bitmaps += bitmap
+            }
+            renderer.close(); pfd.close()
+            Pair(bitmaps, pageCount)
         }
-        result.onSuccess { (bitmap, pageCount) ->
-            documentBox.addView(sectionTitle("PDF 미리보기"))
-            documentBox.addView(text("총 ${pageCount}쪽 중 첫 페이지를 렌더링했습니다.", 13f, Color.rgb(85, 90, 118)).pad(bottom = 8))
-            documentBox.addView(ImageView(this).apply {
-                setImageBitmap(bitmap)
-                adjustViewBounds = true
-                setBackgroundColor(Color.WHITE)
-            })
+        result.onSuccess { (bitmaps, pageCount) ->
+            documentBox.addView(sectionTitle("PDF 원본 비율 렌더링"))
+            val note = if (pageCount > bitmaps.size) "총 ${pageCount}쪽 중 ${bitmaps.size}쪽 표시" else "총 ${pageCount}쪽 표시"
+            documentBox.addView(text(note, 13f, Color.rgb(85, 90, 118)).pad(bottom = 8))
+            bitmaps.forEachIndexed { idx, bitmap ->
+                documentBox.addView(text("${idx + 1}쪽", 12f, Color.rgb(90, 96, 130)).pad(top = 10, bottom = 4))
+                documentBox.addView(ImageView(this).apply {
+                    setImageBitmap(bitmap)
+                    adjustViewBounds = true
+                    setBackgroundColor(Color.WHITE)
+                })
+            }
         }.onFailure { showError("PDF 렌더링 실패", it) }
     }
+
+    private fun renderRhwp(uri: Uri, fileName: String) {
+        val result = runCatching {
+            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("파일을 읽을 수 없습니다")
+            currentBytesBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            bytes.size
+        }
+        result.onSuccess { size ->
+            currentText = ""
+            setSearchVisible(false)
+            documentBox.addView(sectionTitle("HWP/HWPX 원본 비율 렌더링"))
+            documentBox.addView(statusCard("rhwp 렌더링 엔진", "Rust/WASM 기반 rhwp 엔진으로 문서를 로드합니다. 파일 크기: ${humanSize(size.toLong())}"))
+            val webView = WebView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(760))
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.allowFileAccess = true
+                settings.allowContentAccess = true
+                webViewClient = WebViewClient()
+                webChromeClient = WebChromeClient()
+                addJavascriptInterface(RhwpBridge(), "AndroidDocViewer")
+                loadDataWithBaseURL("https://docviewer.local/", rhwpHtml(fileName), "text/html", "UTF-8", null)
+            }
+            documentBox.addView(webView)
+        }.onFailure { err ->
+            showError("rhwp 렌더링 준비 실패", err)
+            if (fileName.lowercase(Locale.ROOT).endsWith(".hwpx")) renderZipXmlDocument(uri, XmlFamily.HWPX)
+        }
+    }
+
+    inner class RhwpBridge {
+        @JavascriptInterface fun fileBase64(): String = currentBytesBase64
+        @JavascriptInterface fun fileName(): String = currentName
+    }
+
+    private fun rhwpHtml(fileName: String): String = """
+        <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>
+          html,body,#editor{margin:0;width:100%;height:100%;background:#eef2fb;font-family:sans-serif;}
+          #status{padding:12px;color:#24304f;font-size:14px;background:#fff;border-bottom:1px solid #dfe5f2;}
+          #editor{height:calc(100% - 44px);} .error{color:#9b1c1c;white-space:pre-wrap;}
+        </style></head><body><div id="status">렌더링 엔진 로딩 중…</div><div id="editor"></div>
+        <script type="module">
+          const status = document.getElementById('status');
+          function b64ToArrayBuffer(b64){ const bin=atob(b64); const len=bin.length; const bytes=new Uint8Array(len); for(let i=0;i<len;i++) bytes[i]=bin.charCodeAt(i); return bytes.buffer; }
+          try {
+            const mod = await import('https://esm.sh/@rhwp/editor');
+            const editor = await mod.createEditor('#editor', { width:'100%', height:'100%' });
+            const buffer = b64ToArrayBuffer(AndroidDocViewer.fileBase64());
+            const result = await editor.loadFile(buffer, AndroidDocViewer.fileName() || ${fileName.jsString()});
+            status.textContent = 'rhwp 렌더링 완료 · ' + ((result && result.pageCount) ? result.pageCount + '쪽' : '페이지 계산 완료');
+          } catch(e) {
+            status.className='error';
+            status.textContent = 'rhwp 렌더링 실패: ' + (e && e.stack ? e.stack : e);
+          }
+        </script></body></html>
+    """.trimIndent()
 
     private fun renderZipXmlDocument(uri: Uri, family: XmlFamily) {
         val result = runCatching { extractZipXmlText(uri, family) }
@@ -398,6 +472,7 @@ class MainActivity : Activity() {
     }
 
     private fun String.sanitize(): String = replace("\n", " ").replace("|||", " ").trim()
+    private fun String.jsString(): String = "'" + replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n") + "'"
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private data class RecentItem(val name: String, val uri: String)

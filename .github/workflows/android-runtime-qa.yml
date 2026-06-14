@@ -183,12 +183,10 @@ jobs:
             sleep 4
             adb exec-out screencap -p > qa-artifacts/10-hwp.png
 
-            python3 -m pip install --user --quiet pillow
-            python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png
-
             adb shell pidof com.docuview.hwp.nativeviewer > qa-artifacts/app.pid
             adb shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' > qa-artifacts/window-focus.txt || true
             adb logcat -d -t 400 > qa-artifacts/logcat-tail.txt
+            python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png
 
       - name: Upload runtime QA artifacts
         if: always()

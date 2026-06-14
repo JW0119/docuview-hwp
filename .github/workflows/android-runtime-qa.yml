@@ -42,10 +42,10 @@ jobs:
           sysctl -a 2>/dev/null | grep -E 'machdep.cpu.features|VMX|SVM' || true
           ls -l /dev/kvm 2>/dev/null || true
 
-      - name: Build debug APK
+      - name: Build debug and release APKs
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:assembleDebug --stacktrace
+          ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace
 
       - name: Prepare runtime QA input files
         run: |
@@ -65,6 +65,51 @@ jobs:
           This page must be visible after the left horizontal swipe.
           If page turning is implemented, a horizontal swipe should not crash and should keep the viewer alive.
           EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          import html
+          q = Path('qa-input')
+          def zwrite(path, files):
+              with ZipFile(q/path, 'w', ZIP_DEFLATED) as z:
+                  for name, data in files.items():
+                      z.writestr(name, data)
+          # Minimal text PDF fixture. PdfRenderer only needs a valid simple PDF.
+          pdf_text = 'DocuView PDF QA\\nPDF page rendered by Android PdfRenderer.'
+          stream = 'BT /F1 24 Tf 72 720 Td (DocuView PDF QA) Tj 0 -40 Td /F1 16 Tf (PDF page rendered by Android PdfRenderer.) Tj ET'
+          objs = [
+              '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n',
+              '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n',
+              '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n',
+              '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n',
+              f'5 0 obj << /Length {len(stream)} >> stream\n{stream}\nendstream endobj\n',
+          ]
+          out = '%PDF-1.4\n'; offsets=[]
+          for o in objs:
+              offsets.append(len(out.encode('latin1'))); out += o
+          xref = len(out.encode('latin1'))
+          out += f'xref\n0 {len(objs)+1}\n0000000000 65535 f \n'
+          for off in offsets: out += f'{off:010d} 00000 n \n'
+          out += f'trailer << /Size {len(objs)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n'
+          (q/'docuview-runtime-test.pdf').write_bytes(out.encode('latin1'))
+
+          zwrite('docuview-runtime-test.hwpx', {
+              'Contents/section0.xml': '<hp:p><hp:t>DocuView HWPX QA</hp:t></hp:p><hp:p><hp:t>HWPX XML text extraction is visible.</hp:t></hp:p>'
+          })
+          zwrite('docuview-runtime-test.docx', {
+              '[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+              'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>DocuView DOCX QA</w:t></w:r></w:p><w:p><w:r><w:t>Word document XML text is visible.</w:t></w:r></w:p></w:body></w:document>'
+          })
+          zwrite('docuview-runtime-test.xlsx', {
+              'xl/sharedStrings.xml': '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>DocuView XLSX QA</t></si><si><t>Spreadsheet text is visible.</t></si></sst>',
+              'xl/worksheets/sheet1.xml': '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row><c><v>DocuView XLSX QA</v></c><c><v>Cell B1</v></c></row></sheetData></worksheet>'
+          })
+          zwrite('docuview-runtime-test.pptx', {
+              'ppt/slides/slide1.xml': '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>DocuView PPTX QA</a:t></a:r></a:p><a:p><a:r><a:t>Slide text is visible.</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>'
+          })
+          (q/'docuview-runtime-test.hwp').write_bytes(b'HWP Binary QA placeholder')
+          PY
 
       - name: Run emulator, install, launch, screenshot, swipe
         uses: reactivecircus/android-emulator-runner@v2
@@ -90,6 +135,12 @@ jobs:
             adb shell pm grant com.docuview.hwp.nativeviewer android.permission.READ_EXTERNAL_STORAGE || true
 
             adb push qa-input/docuview-runtime-test.txt /sdcard/Download/docuview-runtime-test.txt
+            adb push qa-input/docuview-runtime-test.pdf /sdcard/Download/docuview-runtime-test.pdf
+            adb push qa-input/docuview-runtime-test.hwpx /sdcard/Download/docuview-runtime-test.hwpx
+            adb push qa-input/docuview-runtime-test.docx /sdcard/Download/docuview-runtime-test.docx
+            adb push qa-input/docuview-runtime-test.xlsx /sdcard/Download/docuview-runtime-test.xlsx
+            adb push qa-input/docuview-runtime-test.pptx /sdcard/Download/docuview-runtime-test.pptx
+            adb push qa-input/docuview-runtime-test.hwp /sdcard/Download/docuview-runtime-test.hwp
 
             adb shell monkey -p com.docuview.hwp.nativeviewer -c android.intent.category.LAUNCHER 1
             sleep 4
@@ -97,15 +148,39 @@ jobs:
 
             adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.txt -t text/plain -p com.docuview.hwp.nativeviewer
             sleep 5
-            adb exec-out screencap -p > qa-artifacts/02-open-text-document.png
+            adb exec-out screencap -p > qa-artifacts/02-txt-page-1.png
 
             adb shell input swipe 950 1200 130 1200 350
             sleep 2
-            adb exec-out screencap -p > qa-artifacts/03-after-left-swipe.png
+            adb exec-out screencap -p > qa-artifacts/03-txt-page-2-after-left-swipe.png
 
             adb shell input swipe 130 1200 950 1200 350
             sleep 2
-            adb exec-out screencap -p > qa-artifacts/04-after-right-swipe.png
+            adb exec-out screencap -p > qa-artifacts/04-txt-page-1-after-right-swipe.png
+
+            adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.pdf -t application/pdf -p com.docuview.hwp.nativeviewer
+            sleep 5
+            adb exec-out screencap -p > qa-artifacts/05-pdf.png
+
+            adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.hwpx -t application/vnd.hancom.hwpx -p com.docuview.hwp.nativeviewer
+            sleep 4
+            adb exec-out screencap -p > qa-artifacts/06-hwpx.png
+
+            adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.docx -t application/vnd.openxmlformats-officedocument.wordprocessingml.document -p com.docuview.hwp.nativeviewer
+            sleep 4
+            adb exec-out screencap -p > qa-artifacts/07-docx.png
+
+            adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.xlsx -t application/vnd.openxmlformats-officedocument.spreadsheetml.sheet -p com.docuview.hwp.nativeviewer
+            sleep 4
+            adb exec-out screencap -p > qa-artifacts/08-xlsx.png
+
+            adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.pptx -t application/vnd.openxmlformats-officedocument.presentationml.presentation -p com.docuview.hwp.nativeviewer
+            sleep 4
+            adb exec-out screencap -p > qa-artifacts/09-pptx.png
+
+            adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.hwp -t application/vnd.hancom.hwp -p com.docuview.hwp.nativeviewer
+            sleep 4
+            adb exec-out screencap -p > qa-artifacts/10-hwp-unsupported.png
 
             adb shell pidof com.docuview.hwp.nativeviewer > qa-artifacts/app.pid
             adb shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' > qa-artifacts/window-focus.txt || true
@@ -121,4 +196,5 @@ jobs:
             qa-artifacts/*.txt
             qa-artifacts/app.pid
             app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/*.apk
           if-no-files-found: warn

@@ -98,13 +98,17 @@
         const doc = new HwpDocument(bytesFromBase64(base64));
         const total = Math.max(1, Number(doc.pageCount ? doc.pageCount() : 1));
         const maxPages = Math.min(total, 20);
+        let renderedPages = 0;
         for (let i = 0; i < maxPages; i++) {
           const svg = doc.renderPageSvg(i);
+          if (!svg || !String(svg).trim()) continue;
           const page = document.createElement('div');
           page.className = 'page';
           page.innerHTML = svg;
           viewer.appendChild(page);
+          renderedPages += 1;
         }
+        if (renderedPages === 0) throw new Error('HWP engine returned no visible pages');
         if (maxPages < total) {
           const more = document.createElement('div');
           more.style.cssText = 'padding:14px 18px 24px;color:#6b7280;font-size:14px;text-align:center;';

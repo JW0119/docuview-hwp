@@ -13,8 +13,23 @@ on:
 
 jobs:
   emulator-screenshot-qa:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    name: emulator-screenshot-qa-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-api29-x86_64
+            os: ubuntu-latest
+            api-level: 29
+            target: default
+            arch: x86_64
+          - name: macos-api29-x86_64
+            os: macos-latest
+            api-level: 29
+            target: default
+            arch: x86_64
 
     steps:
       - name: Checkout
@@ -25,6 +40,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Show host virtualization status
+        run: |
+          uname -a
+          sysctl -a 2>/dev/null | grep -E 'machdep.cpu.features|VMX|SVM' || true
+          ls -l /dev/kvm 2>/dev/null || true
 
       - name: Build debug APK
         run: |
@@ -51,14 +72,16 @@ jobs:
       - name: Run emulator, install, launch, screenshot, swipe
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
+          api-level: ${{ matrix.api-level }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
           profile: pixel_6
+          emulator-boot-timeout: 900
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           script: |
             set -euxo pipefail
+            adb wait-for-device
             adb devices
             adb shell settings put global window_animation_scale 0
             adb shell settings put global transition_animation_scale 0
@@ -70,12 +93,10 @@ jobs:
 
             adb push qa-input/docuview-runtime-test.txt /sdcard/Download/docuview-runtime-test.txt
 
-            # Launch home first, capture baseline launch screen.
             adb shell monkey -p com.docuview.hwp.nativeviewer -c android.intent.category.LAUNCHER 1
             sleep 4
             adb exec-out screencap -p > qa-artifacts/01-launch.png
 
-            # Launch as a document viewer through ACTION_VIEW.
             adb shell am start \
               -a android.intent.action.VIEW \
               -d file:///sdcard/Download/docuview-runtime-test.txt \
@@ -84,7 +105,6 @@ jobs:
             sleep 5
             adb exec-out screencap -p > qa-artifacts/02-open-text-document.png
 
-            # Exercise horizontal page-turn/navigation gesture and capture again.
             adb shell input swipe 950 1200 130 1200 350
             sleep 2
             adb exec-out screencap -p > qa-artifacts/03-after-left-swipe.png
@@ -101,7 +121,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: docuview-runtime-qa
+          name: docuview-runtime-qa-${{ matrix.name }}
           path: |
             qa-artifacts/*.png
             qa-artifacts/*.txt

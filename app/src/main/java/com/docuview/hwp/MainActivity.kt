@@ -22,6 +22,9 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 import java.util.Locale
 import java.util.zip.ZipInputStream
 
@@ -289,7 +292,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderPlainText(uri: Uri) {
-        val result = runCatching { contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty() }
+        val result = runCatching { openDocumentStream(uri).bufferedReader().use { it.readText() } }
         result.onSuccess { showTextViewer(it) }.onFailure { showViewerMessage("문서를 열 수 없습니다.", canPage = false) }
     }
 
@@ -356,7 +359,7 @@ class MainActivity : Activity() {
 
     private fun extractZipXmlText(uri: Uri, family: XmlFamily): String {
         val parts = mutableListOf<String>()
-        ZipInputStream(contentResolver.openInputStream(uri)).use { zip ->
+        ZipInputStream(openDocumentStream(uri)).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
                 if (!entry.isDirectory && family.accept(entry.name)) {
@@ -367,6 +370,15 @@ class MainActivity : Activity() {
             }
         }
         return parts.joinToString("\n\n").trim().take(MAX_TEXT_CHARS)
+    }
+
+    private fun openDocumentStream(uri: Uri): InputStream {
+        runCatching { contentResolver.openInputStream(uri) }.getOrNull()?.let { return it }
+        if (uri.scheme == "file") {
+            val path = uri.path ?: error("missing file path")
+            return FileInputStream(File(path))
+        }
+        error("cannot open document uri: $uri")
     }
 
     private fun ZipInputStream.readEntryBytes(maxBytes: Int): ByteArray {

@@ -57,10 +57,12 @@ jobs:
           The app should behave as a document viewer: fullscreen surface, readable document body, no editor chrome.
 
           Page 1 sample content.
+          This page must be visible before the horizontal swipe.
 
           --- page break expectation for swipe smoke test ---
 
           Page 2 sample content.
+          This page must be visible after the left horizontal swipe.
           If page turning is implemented, a horizontal swipe should not crash and should keep the viewer alive.
           EOF
 
@@ -81,6 +83,7 @@ jobs:
             adb shell settings put global window_animation_scale 0
             adb shell settings put global transition_animation_scale 0
             adb shell settings put global animator_duration_scale 0
+            adb shell settings put secure immersive_mode_confirmations confirmed || true
 
             test -f app/build/outputs/apk/debug/app-debug.apk
             adb install -r app/build/outputs/apk/debug/app-debug.apk

@@ -333,6 +333,11 @@ class MainActivity : Activity() {
         val charsPerPage = 1450
         val clean = value.replace(Regex("\n{3,}"), "\n\n").trim()
         if (clean.isBlank()) return listOf("표시할 본문이 없습니다.")
+        val explicitPages = clean
+            .split(Regex("(?m)^---\\s*page break[^\\n]*---\\s*$|\\f"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (explicitPages.size > 1) return explicitPages
         val pages = mutableListOf<String>()
         var remaining = clean
         while (remaining.isNotBlank()) {

@@ -1,0 +1,111 @@
+name: Android Runtime QA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle/**'
+      - 'gradlew'
+      - '.github/workflows/android-runtime-qa.yml'
+
+jobs:
+  emulator-screenshot-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Prepare runtime QA input files
+        run: |
+          mkdir -p qa-input qa-artifacts
+          cat > qa-input/docuview-runtime-test.txt <<'EOF'
+          DocuView Runtime QA
+
+          This is a plain text document opened through ACTION_VIEW.
+          The app should behave as a document viewer: fullscreen surface, readable document body, no editor chrome.
+
+          Page 1 sample content.
+
+          --- page break expectation for swipe smoke test ---
+
+          Page 2 sample content.
+          If page turning is implemented, a horizontal swipe should not crash and should keep the viewer alive.
+          EOF
+
+      - name: Run emulator, install, launch, screenshot, swipe
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          disable-animations: true
+          script: |
+            set -euxo pipefail
+            adb devices
+            adb shell settings put global window_animation_scale 0
+            adb shell settings put global transition_animation_scale 0
+            adb shell settings put global animator_duration_scale 0
+
+            APK="app/build/outputs/apk/debug/app-debug.apk"
+            test -f "$APK"
+            adb install -r "$APK"
+
+            adb push qa-input/docuview-runtime-test.txt /sdcard/Download/docuview-runtime-test.txt
+
+            # Launch home first, capture baseline launch screen.
+            adb shell monkey -p com.docuview.hwp.nativeviewer -c android.intent.category.LAUNCHER 1
+            sleep 4
+            adb exec-out screencap -p > qa-artifacts/01-launch.png
+
+            # Launch as a document viewer through ACTION_VIEW.
+            adb shell am start \
+              -a android.intent.action.VIEW \
+              -d file:///sdcard/Download/docuview-runtime-test.txt \
+              -t text/plain \
+              -p com.docuview.hwp.nativeviewer
+            sleep 5
+            adb exec-out screencap -p > qa-artifacts/02-open-text-document.png
+
+            # Exercise horizontal page-turn/navigation gesture and capture again.
+            adb shell input swipe 950 1200 130 1200 350
+            sleep 2
+            adb exec-out screencap -p > qa-artifacts/03-after-left-swipe.png
+
+            adb shell input swipe 130 1200 950 1200 350
+            sleep 2
+            adb exec-out screencap -p > qa-artifacts/04-after-right-swipe.png
+
+            adb shell pidof com.docuview.hwp.nativeviewer > qa-artifacts/app.pid
+            adb shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' > qa-artifacts/window-focus.txt || true
+            adb logcat -d -t 400 > qa-artifacts/logcat-tail.txt
+
+      - name: Upload runtime QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docuview-runtime-qa
+          path: |
+            qa-artifacts/*.png
+            qa-artifacts/*.txt
+            qa-artifacts/app.pid
+            app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: warn

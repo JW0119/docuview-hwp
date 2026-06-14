@@ -177,7 +177,7 @@ class MainActivity : Activity() {
         when {
             lower.endsWith(".pdf") || mime(uri) == "application/pdf" -> renderPdf(uri)
             lower.endsWith(".hwpx") -> renderZipXmlDocument(uri, XmlFamily.HWPX)
-            lower.endsWith(".hwp") -> showViewerMessage("HWP 바이너리 문서는 현재 네이티브 전체화면 뷰어에서 표시할 수 없습니다. HWPX 또는 PDF로 열어 주세요.", canPage = false)
+            lower.endsWith(".hwp") -> renderBinaryHwp(uri)
             lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".csv") || (mime(uri)?.startsWith("text/") == true) -> renderPlainText(uri)
             lower.endsWith(".docx") -> renderZipXmlDocument(uri, XmlFamily.DOCX)
             lower.endsWith(".xlsx") -> renderZipXmlDocument(uri, XmlFamily.XLSX)
@@ -301,6 +301,19 @@ class MainActivity : Activity() {
             .onFailure { showViewerMessage("문서를 열 수 없습니다.", false) }
     }
 
+    private fun renderBinaryHwp(uri: Uri) {
+        val result = runCatching { extractBinaryHwpText(uri) }
+        result.onSuccess {
+            if (it.isBlank()) {
+                showViewerMessage("HWP 바이너리 문서를 열었지만 표시할 수 있는 본문을 찾지 못했습니다. HWPX 또는 PDF 변환본으로 열어 주세요.", false)
+            } else {
+                showTextViewer(it)
+            }
+        }.onFailure {
+            showViewerMessage("HWP 바이너리 문서를 열 수 없습니다. HWPX 또는 PDF 변환본으로 열어 주세요.", false)
+        }
+    }
+
     private fun showTextViewer(textValue: String) {
         currentMode = ViewerMode.TEXT
         currentText = textValue
@@ -374,6 +387,70 @@ class MainActivity : Activity() {
             }
         }
         return parts.joinToString("\n\n").trim().take(MAX_TEXT_CHARS)
+    }
+
+    private fun extractBinaryHwpText(uri: Uri): String {
+        val bytes = openDocumentStream(uri).use { input ->
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            var total = 0
+            while (total < MAX_BINARY_HWP_BYTES) {
+                val read = input.read(buffer, 0, minOf(buffer.size, MAX_BINARY_HWP_BYTES - total))
+                if (read <= 0) break
+                out.write(buffer, 0, read)
+                total += read
+            }
+            out.toByteArray()
+        }
+        val candidates = mutableListOf<String>()
+        candidates += bytes.extractPrintableAsciiRuns()
+        candidates += bytes.extractUtf16LeRuns()
+        return candidates
+            .flatMap { it.lines() }
+            .map { it.trim() }
+            .filter { it.length >= 3 && !it.matches(Regex("^[\\p{Punct}\\d\\s]+$")) }
+            .distinct()
+            .joinToString("\n")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+            .take(MAX_TEXT_CHARS)
+    }
+
+    private fun ByteArray.extractPrintableAsciiRuns(): String {
+        val parts = mutableListOf<String>()
+        val current = StringBuilder()
+        for (byte in this) {
+            val value = byte.toInt() and 0xFF
+            val char = value.toChar()
+            if (char == '\n' || char == '\r' || char == '\t' || value in 0x20..0x7E) {
+                current.append(if (char == '\r') '\n' else char)
+            } else {
+                if (current.length >= 4) parts += current.toString()
+                current.clear()
+            }
+        }
+        if (current.length >= 4) parts += current.toString()
+        return parts.joinToString("\n").replace(Regex("[ \\t]+"), " ").trim()
+    }
+
+    private fun ByteArray.extractUtf16LeRuns(): String {
+        val parts = mutableListOf<String>()
+        val current = StringBuilder()
+        var index = 0
+        while (index + 1 < size) {
+            val code = (this[index].toInt() and 0xFF) or ((this[index + 1].toInt() and 0xFF) shl 8)
+            val char = code.toChar()
+            val readable = char == '\n' || char == '\r' || char == '\t' || char in ' '..'~' || char.code in 0xAC00..0xD7A3
+            if (readable) {
+                current.append(if (char == '\r') '\n' else char)
+            } else {
+                if (current.length >= 4) parts += current.toString()
+                current.clear()
+            }
+            index += 2
+        }
+        if (current.length >= 4) parts += current.toString()
+        return parts.joinToString("\n").replace(Regex("[ \\t]+"), " ").trim()
     }
 
     private fun openDocumentStream(uri: Uri): InputStream {
@@ -490,6 +567,7 @@ class MainActivity : Activity() {
         private const val REQUEST_OPEN = 10
         private const val KEY_RECENT = "items"
         private const val MAX_TEXT_CHARS = 120_000
+        private const val MAX_BINARY_HWP_BYTES = 4_000_000
         private val COLOR_APP_BG = Color.rgb(245, 247, 252)
         private val COLOR_VIEWER_BG = Color.rgb(238, 242, 247)
         private val COLOR_INK = Color.rgb(24, 31, 46)

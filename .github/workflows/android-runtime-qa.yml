@@ -91,11 +91,7 @@ jobs:
             sleep 4
             adb exec-out screencap -p > qa-artifacts/01-launch.png
 
-            adb shell am start \
-              -a android.intent.action.VIEW \
-              -d file:///sdcard/Download/docuview-runtime-test.txt \
-              -t text/plain \
-              -p com.docuview.hwp.nativeviewer
+            adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.txt -t text/plain -p com.docuview.hwp.nativeviewer
             sleep 5
             adb exec-out screencap -p > qa-artifacts/02-open-text-document.png
 

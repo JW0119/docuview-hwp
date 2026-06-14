@@ -13,13 +13,8 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.text.TextUtils
-import android.util.Base64
 import android.view.Gravity
 import android.view.View
-import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -41,8 +36,9 @@ class MainActivity : Activity() {
 
     private var currentName: String = ""
     private var currentText: String = ""
-    private var currentBytesBase64: String = ""
     private var currentMode: ViewerMode = ViewerMode.NONE
+    private var textPages: List<String> = emptyList()
+    private var textPageIndex = 0
 
     private var pdfRenderer: PdfRenderer? = null
     private var pdfPfd: ParcelFileDescriptor? = null
@@ -50,9 +46,6 @@ class MainActivity : Activity() {
     private var pdfPageCount = 0
     private var pdfImageView: ImageView? = null
 
-    private var activeWebView: WebView? = null
-    private var rhwpPage = 1
-    private var rhwpPageCount = 0
 
     private val recentPrefs by lazy { getSharedPreferences("recent_documents", Context.MODE_PRIVATE) }
 
@@ -180,7 +173,8 @@ class MainActivity : Activity() {
         showLoading("문서를 여는 중…")
         when {
             lower.endsWith(".pdf") || mime(uri) == "application/pdf" -> renderPdf(uri)
-            lower.endsWith(".hwp") || lower.endsWith(".hwpx") -> renderRhwp(uri, currentName)
+            lower.endsWith(".hwpx") -> renderZipXmlDocument(uri, XmlFamily.HWPX)
+            lower.endsWith(".hwp") -> showViewerMessage("HWP 바이너리 문서는 현재 네이티브 전체화면 뷰어에서 표시할 수 없습니다. HWPX 또는 PDF로 열어 주세요.", canPage = false)
             lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".csv") || (mime(uri)?.startsWith("text/") == true) -> renderPlainText(uri)
             lower.endsWith(".docx") -> renderZipXmlDocument(uri, XmlFamily.DOCX)
             lower.endsWith(".xlsx") -> renderZipXmlDocument(uri, XmlFamily.XLSX)
@@ -221,6 +215,8 @@ class MainActivity : Activity() {
                 adjustViewBounds = true
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 setBackgroundColor(Color.WHITE)
+                isClickable = true
+                setOnTouchListener { _, event -> handleViewerTouch(event) }
             }
             surface.addView(pdfImageView, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
             viewerContent.addView(surface, FrameLayout.LayoutParams(-1, -1))
@@ -248,122 +244,10 @@ class MainActivity : Activity() {
         }.onFailure { showViewerMessage("이 페이지를 표시할 수 없습니다.", canPage = pdfPageCount > 1) }
     }
 
-    private fun renderRhwp(uri: Uri, fileName: String) {
-        val result = runCatching {
-            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("read failed")
-            currentBytesBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        }
-        result.onSuccess {
-            currentMode = ViewerMode.RHWP
-            viewerContent.removeAllViews()
-            rhwpPage = 1
-            rhwpPageCount = 0
-            val webView = WebView(this).apply {
-                layoutParams = FrameLayout.LayoutParams(-1, -1)
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.allowFileAccess = false
-                settings.allowContentAccess = true
-                settings.loadWithOverviewMode = true
-                settings.useWideViewPort = true
-                settings.builtInZoomControls = true
-                settings.displayZoomControls = false
-                settings.mediaPlaybackRequiresUserGesture = true
-                webChromeClient = WebChromeClient()
-                webViewClient = WebViewClient()
-                addJavascriptInterface(RhwpBridge(), "AndroidDocViewer")
-                loadDataWithBaseURL("https://docviewer.local/", rhwpHtml(fileName), "text/html", "UTF-8", null)
-            }
-            activeWebView = webView
-            viewerContent.addView(webView, FrameLayout.LayoutParams(-1, -1))
-        }.onFailure {
-            if (fileName.lowercase(Locale.ROOT).endsWith(".hwpx")) renderZipXmlDocument(uri, XmlFamily.HWPX)
-            else showViewerMessage("문서를 열 수 없습니다. HWPX 또는 PDF로 다시 시도해 주세요.", canPage = false)
-        }
-    }
-
-    inner class RhwpBridge {
-        @JavascriptInterface fun fileBase64(): String = currentBytesBase64
-        @JavascriptInterface fun fileName(): String = currentName
-        @JavascriptInterface fun onPageInfo(page: Int, count: Int) {
-            runOnUiThread {
-                rhwpPage = page.coerceAtLeast(1)
-                rhwpPageCount = count.coerceAtLeast(0)
-            }
-        }
-        @JavascriptInterface fun onReady() {
-            runOnUiThread {
-            }
-        }
-        @JavascriptInterface fun onRenderFailed() {
-            runOnUiThread { showViewerMessage("문서를 표시할 수 없습니다. 다른 파일을 선택해 주세요.", canPage = false) }
-        }
-    }
-
-    private fun rhwpHtml(fileName: String): String = """
-        <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
-        <style>
-          html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
-          #viewer{position:fixed;inset:0;overflow:auto;background:#fff;box-sizing:border-box;padding:0;}
-          #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#667085;background:#fff;font-size:14px;z-index:9999;}
-          [class*='toolbar'],[class*='Toolbar'],[class*='menubar'],[class*='Menu'],[class*='sidebar'],[class*='Sidebar'],[class*='ribbon'],[class*='Ribbon'],[class*='statusbar'],[class*='StatusBar'],[class*='panel'],[class*='Panel'],[class*='header'],[class*='Header'],[class*='top'],[class*='Top']{display:none!important;visibility:hidden!important;height:0!important;min-height:0!important;}
-          button,input,select,textarea,[role='button'],[role='toolbar'],[contenteditable='true']{display:none!important;pointer-events:none!important;}
-          canvas,svg{max-width:100%!important;height:auto!important;background:#fff!important;box-shadow:none!important;margin:0 auto!important;display:block!important;}
-          [class*='page'],[data-page]{box-shadow:none!important;margin:0 auto!important;background:#fff!important;max-width:100%!important;}
-          *{caret-color:transparent!important;-webkit-user-select:none!important;user-select:none!important;}
-        </style></head><body><div id="viewer"></div><div id="loading">문서를 여는 중…</div>
-        <script type="module">
-          const viewerEl = document.getElementById('viewer');
-          const loading = document.getElementById('loading');
-          let api = null, pages = [], currentPage = 0;
-          function b64ToArrayBuffer(b64){ const bin=atob(b64); const len=bin.length; const bytes=new Uint8Array(len); for(let i=0;i<len;i++) bytes[i]=bin.charCodeAt(i); return bytes.buffer; }
-          function hideChrome(){
-            document.querySelectorAll("[class*='toolbar'],[class*='Toolbar'],[class*='menubar'],[class*='Menu'],[class*='sidebar'],[class*='Sidebar'],[class*='ribbon'],[class*='Ribbon'],[class*='statusbar'],[class*='StatusBar'],[class*='panel'],[class*='Panel'],[class*='header'],[class*='Header'],[class*='top'],[class*='Top'],button,input,select,textarea,[role='button'],[role='toolbar']").forEach(e=>e.remove());
-            document.querySelectorAll('[contenteditable=true]').forEach(e=>e.setAttribute('contenteditable','false'));
-          }
-          function findPages(){
-            const selectors=['[data-page]','.page','.rhwp-page','[class*=page]','canvas','svg'];
-            for(const s of selectors){ const found=[...document.querySelectorAll(s)].filter(e=>e.offsetWidth>80&&e.offsetHeight>80); if(found.length) return found; }
-            return [];
-          }
-          function sendPage(){ AndroidDocViewer.onPageInfo(Math.min(currentPage+1, Math.max(pages.length,1)), pages.length); }
-          function refreshPages(){ hideChrome(); pages=findPages(); if(pages.length){ currentPage=Math.min(currentPage,pages.length-1); sendPage(); } }
-          function showPage(i){
-            refreshPages();
-            if(api){
-              if(i>currentPage && typeof api.nextPage==='function'){ api.nextPage(); currentPage=i; sendPage(); return; }
-              if(i<currentPage && typeof api.prevPage==='function'){ api.prevPage(); currentPage=i; sendPage(); return; }
-              if(typeof api.goToPage==='function'){ currentPage=Math.max(0,i); api.goToPage(currentPage); sendPage(); return; }
-              if(typeof api.setPage==='function'){ currentPage=Math.max(0,i); api.setPage(currentPage); sendPage(); return; }
-            }
-            if(!pages.length) return;
-            currentPage=Math.max(0,Math.min(i,pages.length-1));
-            pages[currentPage].scrollIntoView({behavior:'smooth',block:'start',inline:'nearest'});
-            sendPage();
-          }
-          window.DocViewerNextPage=()=>showPage(currentPage+1);
-          window.DocViewerPrevPage=()=>showPage(currentPage-1);
-          new MutationObserver(()=>hideChrome()).observe(document.documentElement,{childList:true,subtree:true});
-          try{
-            const mod=await import('https://esm.sh/@rhwp/editor');
-            const create=mod.createViewer||mod.createReadOnlyEditor||mod.createEditor;
-            if(!create) throw new Error('factory missing');
-            api=await create('#viewer',{width:'100%',height:'100%',readOnly:true,editable:false,toolbar:false,menubar:false,statusbar:false,sidebar:false,pageMode:true,mode:'viewer'});
-            const buffer=b64ToArrayBuffer(AndroidDocViewer.fileBase64());
-            const result=await api.loadFile(buffer, AndroidDocViewer.fileName() || ${fileName.jsString()});
-            loading.remove(); hideChrome();
-            const count=(result&&result.pageCount)||api.pageCount||(typeof api.getPageCount==='function'?api.getPageCount():0)||0;
-            if(count>0){ pages=new Array(count).fill(null); AndroidDocViewer.onPageInfo(1,count); }
-            AndroidDocViewer.onReady();
-            setTimeout(refreshPages,300); setTimeout(refreshPages,900); setTimeout(refreshPages,1800);
-          }catch(e){ AndroidDocViewer.onRenderFailed(); }
-        </script></body></html>
-    """.trimIndent()
-
     private fun previousPage() {
         when (currentMode) {
             ViewerMode.PDF -> if (pdfPageIndex > 0) renderPdfPage(pdfPageIndex - 1)
-            ViewerMode.RHWP -> activeWebView?.evaluateJavascript("window.DocViewerPrevPage && window.DocViewerPrevPage();", null)
+            ViewerMode.TEXT -> if (textPageIndex > 0) renderTextPage(textPageIndex - 1)
             else -> Unit
         }
     }
@@ -371,7 +255,7 @@ class MainActivity : Activity() {
     private fun nextPage() {
         when (currentMode) {
             ViewerMode.PDF -> if (pdfPageIndex + 1 < pdfPageCount) renderPdfPage(pdfPageIndex + 1)
-            ViewerMode.RHWP -> activeWebView?.evaluateJavascript("window.DocViewerNextPage && window.DocViewerNextPage();", null)
+            ViewerMode.TEXT -> if (textPageIndex + 1 < textPages.size) renderTextPage(textPageIndex + 1)
             else -> Unit
         }
     }
@@ -399,12 +283,9 @@ class MainActivity : Activity() {
         pdfImageView = null
         pdfPageIndex = 0
         pdfPageCount = 0
-        activeWebView?.let {
-            runCatching { it.stopLoading(); it.loadUrl("about:blank"); it.removeAllViews(); it.destroy() }
-        }
-        activeWebView = null
-        currentBytesBase64 = ""
         currentText = ""
+        textPages = emptyList()
+        textPageIndex = 0
     }
 
     private fun renderPlainText(uri: Uri) {
@@ -421,14 +302,45 @@ class MainActivity : Activity() {
     private fun showTextViewer(textValue: String) {
         currentMode = ViewerMode.TEXT
         currentText = textValue
+        textPages = paginateText(textValue)
+        textPageIndex = 0
         viewerContent.removeAllViews()
-        val scroll = ScrollView(this).apply { setPadding(0, 0, 0, 0); setBackgroundColor(Color.WHITE) }
-        scroll.addView(text(textValue.take(MAX_TEXT_CHARS), 16f, COLOR_INK).apply {
+        renderTextPage(0)
+    }
+
+    private fun renderTextPage(index: Int) {
+        if (textPages.isEmpty()) return
+        textPageIndex = index.coerceIn(0, textPages.lastIndex)
+        viewerContent.removeAllViews()
+        val page = TextView(this).apply {
+            text = textPages[textPageIndex]
+            textSize = 17f
+            setTextColor(COLOR_INK)
             setBackgroundColor(Color.WHITE)
-            setPadding(dp(18), dp(18), dp(18), dp(18))
-            setLineSpacing(7f, 1.05f)
-        })
-        viewerContent.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+            setPadding(dp(22), dp(28), dp(22), dp(28))
+            setLineSpacing(8f, 1.08f)
+            gravity = Gravity.TOP or Gravity.START
+            isClickable = true
+            setOnTouchListener { _, event -> handleViewerTouch(event) }
+        }
+        viewerContent.addView(page, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun paginateText(value: String): List<String> {
+        val charsPerPage = 1450
+        val clean = value.replace(Regex("\n{3,}"), "\n\n").trim()
+        if (clean.isBlank()) return listOf("표시할 본문이 없습니다.")
+        val pages = mutableListOf<String>()
+        var remaining = clean
+        while (remaining.isNotBlank()) {
+            if (remaining.length <= charsPerPage) { pages += remaining; break }
+            val cutAt = remaining.lastIndexOf('\n', charsPerPage).takeIf { it > charsPerPage / 2 }
+                ?: remaining.lastIndexOf(' ', charsPerPage).takeIf { it > charsPerPage / 2 }
+                ?: charsPerPage
+            pages += remaining.substring(0, cutAt).trim()
+            remaining = remaining.substring(cutAt).trimStart()
+        }
+        return pages
     }
 
     private fun showViewerMessage(message: String, canPage: Boolean) {
@@ -437,6 +349,8 @@ class MainActivity : Activity() {
         viewerContent.addView(text(message, 16f, COLOR_MUTED).apply {
             gravity = Gravity.CENTER
             setPadding(dp(28), dp(28), dp(28), dp(28))
+            isClickable = true
+            setOnTouchListener { _, event -> handleViewerTouch(event) }
         }, FrameLayout.LayoutParams(-1, -1))
     }
 
@@ -546,7 +460,7 @@ class MainActivity : Activity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private data class RecentItem(val name: String, val uri: String)
-    private enum class ViewerMode { NONE, PDF, RHWP, TEXT }
+    private enum class ViewerMode { NONE, PDF, TEXT }
 
     private enum class XmlFamily(val label: String) {
         HWPX("HWPX") { override fun accept(name: String): Boolean { val n = name.lowercase(Locale.ROOT); return n.endsWith(".xml") && (n.contains("contents/") || n.contains("section") || n.contains("content")) } },

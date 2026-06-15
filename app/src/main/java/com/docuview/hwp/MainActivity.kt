@@ -50,7 +50,12 @@ class MainActivity : Activity() {
     private lateinit var scaleGestureDetector: ScaleGestureDetector
     private var swipeStartX = 0f
     private var swipeStartY = 0f
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var isPanning = false
     private var viewerScale = 1f
+    private var panX = 0f
+    private var panY = 0f
     private lateinit var recentBox: LinearLayout
 
     private var currentName: String = ""
@@ -169,20 +174,38 @@ class MainActivity : Activity() {
 
     private fun handleViewerTouch(event: MotionEvent): Boolean {
         scaleGestureDetector.onTouchEvent(event)
-        if (event.pointerCount > 1 || scaleGestureDetector.isInProgress) return true
+        if (event.pointerCount > 1 || scaleGestureDetector.isInProgress) {
+            isPanning = viewerScale > 1.02f
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 swipeStartX = event.x
                 swipeStartY = event.y
+                lastTouchX = event.x
+                lastTouchY = event.y
+                isPanning = false
                 return true
             }
-            MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_MOVE -> {
+                if (viewerScale > 1.02f) {
+                    val dx = event.x - lastTouchX
+                    val dy = event.y - lastTouchY
+                    if (abs(event.x - swipeStartX) > dp(3) || abs(event.y - swipeStartY) > dp(3)) isPanning = true
+                    panBy(dx, dy)
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val dx = event.x - swipeStartX
                 val dy = event.y - swipeStartY
-                if (abs(dx) > dp(56) && abs(dx) > abs(dy) * 1.35f) {
+                if (!isPanning && viewerScale <= 1.02f && abs(dx) > dp(56) && abs(dx) > abs(dy) * 1.35f) {
                     if (dx < 0) nextPage() else previousPage()
                     return true
                 }
+                isPanning = false
             }
         }
         return true
@@ -298,6 +321,7 @@ class MainActivity : Activity() {
                 pdfImageView?.setImageBitmap(bitmap)
             }
             pdfPageIndex = index
+            resetPan()
             updatePageLabel(index + 1, pdfPageCount)
         }.onFailure { showViewerMessage("이 페이지를 표시할 수 없습니다.", canPage = pdfPageCount > 1) }
     }
@@ -326,22 +350,62 @@ class MainActivity : Activity() {
 
     private fun zoomIn() = setViewerZoom(viewerScale * 1.25f)
     private fun zoomOut() = setViewerZoom(viewerScale / 1.25f)
-    private fun fitPage() = setViewerZoom(1f)
+    private fun fitPage() {
+        resetPan()
+        setViewerZoom(1f)
+    }
 
     private fun setViewerZoom(value: Float) {
+        val oldScale = viewerScale
         viewerScale = value.coerceIn(0.5f, 4.0f)
+        if (viewerScale <= 1.02f) resetPan() else if (oldScale <= 1.02f) applyPan()
         when (currentMode) {
             ViewerMode.PDF -> {
                 pdfImageView?.scaleX = viewerScale
                 pdfImageView?.scaleY = viewerScale
+                applyPan()
                 if (pdfPageCount > 0) updatePageLabel(pdfPageIndex + 1, pdfPageCount)
             }
-            ViewerMode.HWP_ENGINE -> hwpWebView?.evaluateJavascript("window.setHwpZoom && window.setHwpZoom($viewerScale);", null)
+            ViewerMode.HWP_ENGINE -> {
+                hwpWebView?.evaluateJavascript("window.setHwpZoom && window.setHwpZoom($viewerScale);", null)
+                if (viewerScale <= 1.02f) hwpWebView?.evaluateJavascript("window.setHwpPan && window.setHwpPan(0, 0);", null)
+            }
             ViewerMode.TEXT -> {
                 viewerContent.scaleX = viewerScale
                 viewerContent.scaleY = viewerScale
+                applyPan()
                 if (textPages.isNotEmpty()) updatePageLabel(textPageIndex + 1, textPages.size)
             }
+            else -> Unit
+        }
+    }
+
+    private fun panBy(dx: Float, dy: Float) {
+        if (viewerScale <= 1.02f) return
+        val maxX = ((viewerContent.width.coerceAtLeast(resources.displayMetrics.widthPixels) * (viewerScale - 1f)) / 2f).coerceAtLeast(0f)
+        val maxY = ((viewerContent.height.coerceAtLeast(resources.displayMetrics.heightPixels) * (viewerScale - 1f)) / 2f).coerceAtLeast(0f)
+        panX = (panX + dx).coerceIn(-maxX, maxX)
+        panY = (panY + dy).coerceIn(-maxY, maxY)
+        applyPan()
+    }
+
+    private fun resetPan() {
+        panX = 0f
+        panY = 0f
+        applyPan()
+    }
+
+    private fun applyPan() {
+        when (currentMode) {
+            ViewerMode.PDF -> {
+                pdfImageView?.translationX = panX
+                pdfImageView?.translationY = panY
+            }
+            ViewerMode.TEXT -> {
+                viewerContent.translationX = panX
+                viewerContent.translationY = panY
+            }
+            ViewerMode.HWP_ENGINE -> hwpWebView?.evaluateJavascript("window.setHwpPan && window.setHwpPan($panX, $panY);", null)
             else -> Unit
         }
     }

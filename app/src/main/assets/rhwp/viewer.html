@@ -7,8 +7,8 @@
     [hidden] { display:none !important; }
     html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#111827; color:#f9fafb; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Noto Sans CJK KR', 'Noto Sans KR', sans-serif; }
     #status { box-sizing:border-box; height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:#d1d5db; font-size:15px; line-height:1.5; white-space:pre-line; }
-    #viewer { box-sizing:border-box; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; touch-action:pan-y; overflow:hidden; background:#111827; }
-    #pageHost { box-sizing:border-box; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; padding:0; overflow:hidden; transform-origin:center center; transition:transform .12s ease-out; }
+    #viewer { box-sizing:border-box; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; touch-action:none; overflow:hidden; background:#111827; }
+    #pageHost { box-sizing:border-box; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; padding:0; overflow:hidden; transform-origin:center center; transition:transform .08s ease-out; }
     .page { box-sizing:border-box; display:flex; align-items:center; justify-content:center; width:100vw; height:100vh; overflow:hidden; background:#111827; }
     .page svg { display:block; max-width:100vw; max-height:100vh; width:auto; height:auto; background:white; box-shadow:0 0 18px rgba(0,0,0,.38); }
     #badge { position:fixed; right:10px; bottom:62px; z-index:10; padding:5px 8px; border-radius:999px; background:rgba(17,24,39,.58); color:#e5e7eb; font-size:12px; line-height:1; user-select:none; pointer-events:none; }
@@ -32,6 +32,8 @@
     let touchStartY = 0;
     let startedFromAndroid = false;
     let zoom = 1;
+    let panX = 0;
+    let panY = 0;
 
     globalThis.measureTextWidth = (font, text) => {
       if (!ctx) ctx = document.createElement('canvas').getContext('2d');
@@ -106,13 +108,22 @@
     }
 
     function applyZoom() {
-      pageHost.style.transform = `scale(${zoom})`;
+      pageHost.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
       badge.textContent = `${current + 1} / ${total} · ${Math.round(zoom * 100)}%`;
     }
 
     window.setHwpZoom = (value) => {
       const n = Number(value);
       zoom = Math.max(0.5, Math.min(4, Number.isFinite(n) ? n : 1));
+      if (zoom <= 1.02) { panX = 0; panY = 0; }
+      applyZoom();
+    };
+
+    window.setHwpPan = (x, y) => {
+      const nx = Number(x);
+      const ny = Number(y);
+      panX = Number.isFinite(nx) ? nx : 0;
+      panY = Number.isFinite(ny) ? ny : 0;
       applyZoom();
     };
 
@@ -127,6 +138,8 @@
         rendered.set(index, svg);
       }
       pageHost.innerHTML = '';
+      panX = 0;
+      panY = 0;
       const page = document.createElement('div');
       page.className = 'page';
       page.innerHTML = svg;

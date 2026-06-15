@@ -56,6 +56,10 @@ class MainActivity : Activity() {
     private var viewerScale = 1f
     private var panX = 0f
     private var panY = 0f
+    private var pendingPanDx = 0f
+    private var pendingPanDy = 0f
+    private var panFramePosted = false
+    private var lastHwpPanFrameMs = 0L
     private lateinit var recentBox: LinearLayout
 
     private var currentName: String = ""
@@ -382,6 +386,23 @@ class MainActivity : Activity() {
 
     private fun panBy(dx: Float, dy: Float) {
         if (viewerScale <= 1.02f) return
+        pendingPanDx += dx
+        pendingPanDy += dy
+        if (!panFramePosted) {
+            panFramePosted = true
+            viewerLayer.postOnAnimation {
+                panFramePosted = false
+                val frameDx = pendingPanDx
+                val frameDy = pendingPanDy
+                pendingPanDx = 0f
+                pendingPanDy = 0f
+                applyPanDelta(frameDx, frameDy)
+            }
+        }
+    }
+
+    private fun applyPanDelta(dx: Float, dy: Float) {
+        if (viewerScale <= 1.02f) return
         val maxX = ((viewerContent.width.coerceAtLeast(resources.displayMetrics.widthPixels) * (viewerScale - 1f)) / 2f).coerceAtLeast(0f)
         val maxY = ((viewerContent.height.coerceAtLeast(resources.displayMetrics.heightPixels) * (viewerScale - 1f)) / 2f).coerceAtLeast(0f)
         panX = (panX + dx).coerceIn(-maxX, maxX)
@@ -390,6 +411,8 @@ class MainActivity : Activity() {
     }
 
     private fun resetPan() {
+        pendingPanDx = 0f
+        pendingPanDy = 0f
         panX = 0f
         panY = 0f
         applyPan()
@@ -398,14 +421,22 @@ class MainActivity : Activity() {
     private fun applyPan() {
         when (currentMode) {
             ViewerMode.PDF -> {
+                pdfImageView?.animate()?.cancel()
                 pdfImageView?.translationX = panX
                 pdfImageView?.translationY = panY
             }
             ViewerMode.TEXT -> {
+                viewerContent.animate()?.cancel()
                 viewerContent.translationX = panX
                 viewerContent.translationY = panY
             }
-            ViewerMode.HWP_ENGINE -> hwpWebView?.evaluateJavascript("window.setHwpPan && window.setHwpPan($panX, $panY);", null)
+            ViewerMode.HWP_ENGINE -> {
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastHwpPanFrameMs >= 12L || panX == 0f && panY == 0f) {
+                    lastHwpPanFrameMs = now
+                    hwpWebView?.evaluateJavascript("window.setHwpPan && window.setHwpPan($panX, $panY);", null)
+                }
+            }
             else -> Unit
         }
     }

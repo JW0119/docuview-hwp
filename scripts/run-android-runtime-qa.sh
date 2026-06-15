@@ -74,6 +74,12 @@ for attempt in $(seq 1 12); do
 
   if grep -q 'HWP_RENDER_SUCCESS' qa-artifacts/logcat-tail.txt && python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png >> qa-artifacts/hwp-screenshot-check.txt 2>&1; then
     echo "HWP screenshot rendered by engine after ${attempt} attempt(s)" | tee -a qa-artifacts/hwp-screenshot-check.txt
+    adb shell input swipe 950 1200 130 1200 350
+    sleep 3
+    adb exec-out screencap -p > qa-artifacts/11-hwp-after-left-swipe.png
+    adb shell input swipe 130 1200 950 1200 350
+    sleep 3
+    adb exec-out screencap -p > qa-artifacts/12-hwp-after-right-swipe.png
     break
   fi
 

@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <style>
+    [hidden] { display:none !important; }
     html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#111827; color:#f9fafb; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Noto Sans CJK KR', 'Noto Sans KR', sans-serif; }
     #status { box-sizing:border-box; height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:#d1d5db; font-size:15px; line-height:1.5; white-space:pre-line; }
     #viewer { box-sizing:border-box; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; touch-action:pan-y; overflow:hidden; background:#111827; }
@@ -17,7 +18,7 @@
   <div id="status">HWP 렌더링 엔진 준비 중…</div>
   <div id="viewer" hidden><div id="pageHost"></div><div id="badge"></div></div>
   <script type="module">
-    import init, { HwpDocument, lastString } from './rhwp.js';
+    import init, { initSync, HwpDocument } from './rhwp.js';
 
     let ready = false;
     let pending = null;
@@ -29,6 +30,7 @@
     let rendered = new Map();
     let touchStartX = 0;
     let touchStartY = 0;
+    let startedFromAndroid = false;
 
     globalThis.measureTextWidth = (font, text) => {
       if (!ctx) ctx = document.createElement('canvas').getContext('2d');
@@ -78,7 +80,12 @@
     async function boot() {
       try {
         const wasmBytes = await loadWasmBytes();
-        await init({ module_or_path: wasmBytes });
+        try {
+          initSync(wasmBytes);
+        } catch (syncError) {
+          console.warn('HWP WASM sync init failed; retrying async init', syncError);
+          await init(wasmBytes);
+        }
         ready = true;
         setStatus('HWP 렌더링 엔진 준비 완료');
         if (pending) {
@@ -87,7 +94,11 @@
           await window.renderHwpBase64(p.base64, p.name);
         }
       } catch (error) {
-        const message = 'HWP 렌더링 엔진 초기화 실패\n' + (error && error.message ? error.message : String(error));
+        const detail = error && error.message ? error.message : String(error);
+        const legacyHint = /invalid local type|WebAssembly\.compile/i.test(detail)
+          ? '\n\n현재 Android System WebView가 이 HWP 렌더링 엔진의 WASM을 지원하지 않습니다. 최신 WebView/Chrome 기반 환경에서 다시 시도해야 합니다.'
+          : '';
+        const message = 'HWP 렌더링 엔진 초기화 실패\n' + detail + legacyHint;
         setStatus(message);
         if (window.AndroidHwpRenderer && AndroidHwpRenderer.onFailed) AndroidHwpRenderer.onFailed(message);
       }
@@ -99,9 +110,7 @@
       current = index;
       let svg = rendered.get(index);
       if (!svg) {
-        const ok = doc.renderPageSvgStatus(index);
-        svg = lastString();
-        if (!ok) throw new Error(svg || 'HWP engine failed to render page ' + (index + 1));
+        svg = doc.renderPageSvg(index);
         if (!svg || !String(svg).trim()) throw new Error('HWP engine returned an empty page ' + (index + 1));
         rendered.set(index, svg);
       }
@@ -111,6 +120,7 @@
       page.innerHTML = svg;
       pageHost.appendChild(page);
       badge.textContent = `${current + 1} / ${total}`;
+      if (window.AndroidHwpRenderer && AndroidHwpRenderer.onPageChanged) AndroidHwpRenderer.onPageChanged(String(current + 1), String(total));
       return true;
     }
 
@@ -118,6 +128,9 @@
       const target = Math.max(0, Math.min(total - 1, current + delta));
       if (target !== current) renderPage(target);
     }
+
+    window.previousHwpPage = () => nextPage(-1);
+    window.nextHwpPage = () => nextPage(1);
 
     viewer.addEventListener('touchstart', (event) => {
       const t = event.changedTouches[0];
@@ -144,7 +157,7 @@
         rendered.clear();
         doc = new HwpDocument(bytesFromBase64(base64));
         total = Number(doc.pageCount ? doc.pageCount() : 0);
-        if (!total) throw new Error(lastString() || 'HWP 문서 페이지를 읽지 못했습니다');
+        if (!total) throw new Error('HWP 문서 페이지를 읽지 못했습니다');
         renderPage(0);
         setRendered(total);
       } catch (error) {
@@ -152,6 +165,21 @@
         setStatus(message);
         if (window.AndroidHwpRenderer && AndroidHwpRenderer.onFailed) AndroidHwpRenderer.onFailed(message);
       }
+    };
+
+    window.startHwpFromAndroid = async () => {
+      if (startedFromAndroid) return;
+      if (!window.AndroidHwpRenderer || !AndroidHwpRenderer.documentBase64) {
+        const message = 'HWP 렌더링 실패\nAndroid document bridge is not available';
+        setStatus(message);
+        if (window.AndroidHwpRenderer && AndroidHwpRenderer.onFailed) AndroidHwpRenderer.onFailed(message);
+        return;
+      }
+      startedFromAndroid = true;
+      setStatus('HWP 문서 데이터를 불러오는 중…');
+      const name = AndroidHwpRenderer.documentName ? AndroidHwpRenderer.documentName() : '문서';
+      const base64 = AndroidHwpRenderer.documentBase64();
+      await window.renderHwpBase64(base64, name);
     };
 
     boot();

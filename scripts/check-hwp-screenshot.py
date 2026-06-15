@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Fail CI when the HWP screenshot is effectively blank.
+"""Fail CI when the HWP screenshot is not a rendered HWP viewer page.
 
 Dependency-free PNG reader for Android screencap PNGs. This guards against false
 positive runtime QA runs where WebView launches but the HWP rendering surface
-stays empty.
+stays empty or shows only a tiny error/fallback text block.
 """
 from __future__ import annotations
 
@@ -118,8 +118,12 @@ def main() -> int:
     print(f"HWP screenshot={path}")
     print(f"size={width}x{height} non_white_ratio={non_white_ratio:.6f} dark_ratio={dark_ratio:.6f} variety={variety}")
 
-    if non_white_ratio < 0.002 or dark_ratio < 0.0005 or variety < 4:
-        print("FAIL: HWP screenshot appears blank; runtime QA must not pass.", file=sys.stderr)
+    # The known-bad API29/WebView fallback/error screenshot that triggered this
+    # gate had visible text, but only about 1.1% non-white pixels. A real
+    # document viewer page for the QA HWP fixture contains a page surface plus
+    # enough rendered glyph/rule content to clear this stricter floor.
+    if non_white_ratio < 0.018 or dark_ratio < 0.001 or variety < 8:
+        print("FAIL: HWP screenshot appears blank or fallback-like; runtime QA must not pass.", file=sys.stderr)
         return 1
 
     print("PASS: HWP screenshot has visible content.")

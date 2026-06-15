@@ -261,6 +261,7 @@ class MainActivity : Activity() {
         when (currentMode) {
             ViewerMode.PDF -> if (pdfPageIndex > 0) renderPdfPage(pdfPageIndex - 1)
             ViewerMode.TEXT -> if (textPageIndex > 0) renderTextPage(textPageIndex - 1)
+            ViewerMode.HWP_ENGINE -> hwpWebView?.evaluateJavascript("window.previousHwpPage && window.previousHwpPage();", null)
             else -> Unit
         }
     }
@@ -269,6 +270,7 @@ class MainActivity : Activity() {
         when (currentMode) {
             ViewerMode.PDF -> if (pdfPageIndex + 1 < pdfPageCount) renderPdfPage(pdfPageIndex + 1)
             ViewerMode.TEXT -> if (textPageIndex + 1 < textPages.size) renderTextPage(textPageIndex + 1)
+            ViewerMode.HWP_ENGINE -> hwpWebView?.evaluateJavascript("window.nextHwpPage && window.nextHwpPage();", null)
             else -> Unit
         }
     }
@@ -326,8 +328,6 @@ class MainActivity : Activity() {
             }
             currentMode = ViewerMode.HWP_ENGINE
             viewerContent.removeAllViews()
-            val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            val safeName = currentName.replace("\\", "\\\\").replace("'", "\\'")
             val webView = WebView(this).apply {
                 setBackgroundColor(Color.WHITE)
                 isClickable = true
@@ -349,11 +349,10 @@ class MainActivity : Activity() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
                     override fun onPageFinished(view: WebView, url: String?) {
                         super.onPageFinished(view, url)
-                        val script = "window.renderHwpBase64('$encoded', '$safeName');"
-                        view.evaluateJavascript(script, null)
+                        view.evaluateJavascript("window.startHwpFromAndroid && window.startHwpFromAndroid();", null)
                     }
                 }
-                addJavascriptInterface(HwpRenderBridge(uri), "AndroidHwpRenderer")
+                addJavascriptInterface(HwpRenderBridge(uri, bytes, currentName), "AndroidHwpRenderer")
                 setOnTouchListener { _, event -> handleViewerTouch(event) }
             }
             hwpWebView = webView
@@ -365,12 +364,21 @@ class MainActivity : Activity() {
         }
     }
 
-    inner class HwpRenderBridge(private val sourceUri: Uri) {
+    inner class HwpRenderBridge(
+        private val sourceUri: Uri,
+        private val documentBytes: ByteArray,
+        private val documentName: String
+    ) {
+        @JavascriptInterface fun documentName(): String = documentName
+        @JavascriptInterface fun documentBase64(): String = Base64.encodeToString(documentBytes, Base64.NO_WRAP)
         @JavascriptInterface fun onStatus(message: String) {
             Log.d("DocuViewHwp", "HWP_RENDER_STATUS: $message")
         }
         @JavascriptInterface fun onRendered(pageCount: String) {
             Log.i("DocuViewHwp", "HWP_RENDER_SUCCESS: pages=$pageCount source=$sourceUri")
+        }
+        @JavascriptInterface fun onPageChanged(page: String, pageCount: String) {
+            Log.i("DocuViewHwp", "HWP_PAGE_CHANGED: page=$page pages=$pageCount source=$sourceUri")
         }
         @JavascriptInterface fun onFailed(message: String) {
             Log.e("DocuViewHwp", "HWP_RENDER_FAILED: $message source=$sourceUri")

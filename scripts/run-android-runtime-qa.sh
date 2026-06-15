@@ -12,19 +12,28 @@ test -f app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell pm grant com.docuview.hwp.nativeviewer android.permission.READ_EXTERNAL_STORAGE || true
 
-adb push qa-input/docuview-runtime-test.txt /sdcard/Download/docuview-runtime-test.txt
-adb push qa-input/docuview-runtime-test.pdf /sdcard/Download/docuview-runtime-test.pdf
-adb push qa-input/docuview-runtime-test.hwpx /sdcard/Download/docuview-runtime-test.hwpx
-adb push qa-input/docuview-runtime-test.docx /sdcard/Download/docuview-runtime-test.docx
-adb push qa-input/docuview-runtime-test.xlsx /sdcard/Download/docuview-runtime-test.xlsx
-adb push qa-input/docuview-runtime-test.pptx /sdcard/Download/docuview-runtime-test.pptx
-adb push qa-input/docuview-runtime-test.hwp /sdcard/Download/docuview-runtime-test.hwp
+QA_STAGING_DIR=/data/local/tmp/docuview-runtime-qa
+QA_DEVICE_DIR=/data/data/com.docuview.hwp.nativeviewer/files/qa-input
+adb shell rm -rf "$QA_STAGING_DIR"
+adb shell mkdir -p "$QA_STAGING_DIR"
+adb push qa-input/docuview-runtime-test.txt "$QA_STAGING_DIR/docuview-runtime-test.txt"
+adb push qa-input/docuview-runtime-test.pdf "$QA_STAGING_DIR/docuview-runtime-test.pdf"
+adb push qa-input/docuview-runtime-test.hwpx "$QA_STAGING_DIR/docuview-runtime-test.hwpx"
+adb push qa-input/docuview-runtime-test.docx "$QA_STAGING_DIR/docuview-runtime-test.docx"
+adb push qa-input/docuview-runtime-test.xlsx "$QA_STAGING_DIR/docuview-runtime-test.xlsx"
+adb push qa-input/docuview-runtime-test.pptx "$QA_STAGING_DIR/docuview-runtime-test.pptx"
+adb push qa-input/docuview-runtime-test.hwp "$QA_STAGING_DIR/docuview-runtime-test.hwp"
+adb shell run-as com.docuview.hwp.nativeviewer mkdir -p files/qa-input
+for name in txt pdf hwpx docx xlsx pptx hwp; do
+    adb shell run-as com.docuview.hwp.nativeviewer cp "$QA_STAGING_DIR/docuview-runtime-test.$name" "files/qa-input/docuview-runtime-test.$name"
+done
+adb shell run-as com.docuview.hwp.nativeviewer ls -l files/qa-input/docuview-runtime-test.hwp > qa-artifacts/hwp-fixture-readable.txt
 
 adb shell monkey -p com.docuview.hwp.nativeviewer -c android.intent.category.LAUNCHER 1
 sleep 4
 adb exec-out screencap -p > qa-artifacts/01-launch.png
 
-adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.txt -t text/plain -p com.docuview.hwp.nativeviewer
+adb shell am start -a android.intent.action.VIEW -d "file://$QA_DEVICE_DIR/docuview-runtime-test.txt" -t text/plain -p com.docuview.hwp.nativeviewer
 sleep 5
 adb exec-out screencap -p > qa-artifacts/02-txt-page-1.png
 
@@ -36,28 +45,28 @@ adb shell input swipe 130 1200 950 1200 350
 sleep 2
 adb exec-out screencap -p > qa-artifacts/04-txt-page-1-after-right-swipe.png
 
-adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.pdf -t application/pdf -p com.docuview.hwp.nativeviewer
+adb shell am start -a android.intent.action.VIEW -d "file://$QA_DEVICE_DIR/docuview-runtime-test.pdf" -t application/pdf -p com.docuview.hwp.nativeviewer
 sleep 5
 adb exec-out screencap -p > qa-artifacts/05-pdf.png
 
-adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.hwpx -t application/vnd.hancom.hwpx -p com.docuview.hwp.nativeviewer
+adb shell am start -a android.intent.action.VIEW -d "file://$QA_DEVICE_DIR/docuview-runtime-test.hwpx" -t application/vnd.hancom.hwpx -p com.docuview.hwp.nativeviewer
 sleep 4
 adb exec-out screencap -p > qa-artifacts/06-hwpx.png
 
-adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.docx -t application/vnd.openxmlformats-officedocument.wordprocessingml.document -p com.docuview.hwp.nativeviewer
+adb shell am start -a android.intent.action.VIEW -d "file://$QA_DEVICE_DIR/docuview-runtime-test.docx" -t application/vnd.openxmlformats-officedocument.wordprocessingml.document -p com.docuview.hwp.nativeviewer
 sleep 4
 adb exec-out screencap -p > qa-artifacts/07-docx.png
 
-adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.xlsx -t application/vnd.openxmlformats-officedocument.spreadsheetml.sheet -p com.docuview.hwp.nativeviewer
+adb shell am start -a android.intent.action.VIEW -d "file://$QA_DEVICE_DIR/docuview-runtime-test.xlsx" -t application/vnd.openxmlformats-officedocument.spreadsheetml.sheet -p com.docuview.hwp.nativeviewer
 sleep 4
 adb exec-out screencap -p > qa-artifacts/08-xlsx.png
 
-adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.pptx -t application/vnd.openxmlformats-officedocument.presentationml.presentation -p com.docuview.hwp.nativeviewer
+adb shell am start -a android.intent.action.VIEW -d "file://$QA_DEVICE_DIR/docuview-runtime-test.pptx" -t application/vnd.openxmlformats-officedocument.presentationml.presentation -p com.docuview.hwp.nativeviewer
 sleep 4
 adb exec-out screencap -p > qa-artifacts/09-pptx.png
 
 adb logcat -c || true
-adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.hwp -t application/vnd.hancom.hwp -p com.docuview.hwp.nativeviewer
+adb shell am start -a android.intent.action.VIEW -d "file://$QA_DEVICE_DIR/docuview-runtime-test.hwp" -t application/vnd.hancom.hwp -p com.docuview.hwp.nativeviewer
 for attempt in $(seq 1 12); do
   sleep 5
   adb exec-out screencap -p > qa-artifacts/10-hwp.png
@@ -77,6 +86,8 @@ for attempt in $(seq 1 12); do
     adb shell input swipe 950 1200 130 1200 350
     sleep 3
     adb exec-out screencap -p > qa-artifacts/11-hwp-after-left-swipe.png
+    adb logcat -d -t 1200 > qa-artifacts/logcat-tail.txt
+    python3 scripts/check-hwp-runtime-contract.py qa-artifacts > qa-artifacts/hwp-runtime-contract.txt 2>&1
     adb shell input swipe 130 1200 950 1200 350
     sleep 3
     adb exec-out screencap -p > qa-artifacts/12-hwp-after-right-swipe.png
@@ -94,3 +105,4 @@ done
 adb shell pidof com.docuview.hwp.nativeviewer > qa-artifacts/app.pid
 adb shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' > qa-artifacts/window-focus.txt || true
 adb logcat -d -t 1200 > qa-artifacts/logcat-tail.txt
+python3 scripts/check-hwp-runtime-contract.py qa-artifacts > qa-artifacts/hwp-runtime-contract.txt 2>&1

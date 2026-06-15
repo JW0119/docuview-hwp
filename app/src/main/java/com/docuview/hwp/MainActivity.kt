@@ -15,6 +15,8 @@ import android.provider.OpenableColumns
 import android.text.TextUtils
 import android.util.Base64
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.util.Log
 import android.webkit.ConsoleMessage
@@ -30,6 +32,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import kotlin.math.abs
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -42,8 +45,12 @@ class MainActivity : Activity() {
     private lateinit var homeBox: LinearLayout
     private lateinit var viewerLayer: FrameLayout
     private lateinit var viewerContent: FrameLayout
+    private lateinit var controlBar: LinearLayout
+    private lateinit var pageLabel: TextView
+    private lateinit var scaleGestureDetector: ScaleGestureDetector
     private var swipeStartX = 0f
     private var swipeStartY = 0f
+    private var viewerScale = 1f
     private lateinit var recentBox: LinearLayout
 
     private var currentName: String = ""
@@ -86,6 +93,12 @@ class MainActivity : Activity() {
         root = FrameLayout(this).apply { setBackgroundColor(COLOR_APP_BG) }
         buildHome()
         buildViewer()
+        scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                setViewerZoom(viewerScale * detector.scaleFactor)
+                return true
+            }
+        })
         root.addView(homeBox, FrameLayout.LayoutParams(-1, -1))
         root.addView(viewerLayer, FrameLayout.LayoutParams(-1, -1))
         viewerLayer.visibility = View.GONE
@@ -123,19 +136,50 @@ class MainActivity : Activity() {
         }
         viewerContent = FrameLayout(this).apply { setBackgroundColor(Color.WHITE) }
         viewerLayer.addView(viewerContent, FrameLayout.LayoutParams(-1, -1))
+        buildControls()
+        viewerLayer.addView(controlBar, FrameLayout.LayoutParams(-1, dp(54), Gravity.BOTTOM))
     }
 
-    private fun handleViewerTouch(event: android.view.MotionEvent): Boolean {
+    private fun buildControls() {
+        pageLabel = text("", 13f, Color.WHITE, bold = true).apply { gravity = Gravity.CENTER }
+        controlBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            setBackgroundColor(Color.argb(190, 17, 24, 39))
+            addView(controlButton("‹") { previousPage() }, LinearLayout.LayoutParams(dp(46), -1))
+            addView(controlButton("−") { zoomOut() }, LinearLayout.LayoutParams(dp(46), -1))
+            addView(controlButton("전체") { fitPage() }, LinearLayout.LayoutParams(dp(66), -1))
+            addView(controlButton("+") { zoomIn() }, LinearLayout.LayoutParams(dp(46), -1))
+            addView(pageLabel, LinearLayout.LayoutParams(0, -1, 1f))
+            addView(controlButton("›") { nextPage() }, LinearLayout.LayoutParams(dp(46), -1))
+        }
+    }
+
+    private fun controlButton(label: String, action: () -> Unit): TextView = TextView(this).apply {
+        text = label
+        textSize = 15f
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        setOnClickListener { action() }
+        isClickable = true
+        setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    private fun handleViewerTouch(event: MotionEvent): Boolean {
+        scaleGestureDetector.onTouchEvent(event)
+        if (event.pointerCount > 1 || scaleGestureDetector.isInProgress) return true
         when (event.actionMasked) {
-            android.view.MotionEvent.ACTION_DOWN -> {
+            MotionEvent.ACTION_DOWN -> {
                 swipeStartX = event.x
                 swipeStartY = event.y
                 return true
             }
-            android.view.MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_UP -> {
                 val dx = event.x - swipeStartX
                 val dy = event.y - swipeStartY
-                if (kotlin.math.abs(dx) > dp(56) && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.35f) {
+                if (abs(dx) > dp(56) && abs(dx) > abs(dy) * 1.35f) {
                     if (dx < 0) nextPage() else previousPage()
                     return true
                 }
@@ -175,6 +219,7 @@ class MainActivity : Activity() {
 
     private fun render(uri: Uri) {
         cleanupActiveDocument()
+        fitPage()
         currentName = displayName(uri)
         viewerContent.removeAllViews()
         homeBox.visibility = View.GONE
@@ -276,7 +321,29 @@ class MainActivity : Activity() {
     }
 
     private fun updatePageLabel(page: Int, count: Int) {
-        // Full-screen viewer intentionally has no visible page/control chrome.
+        pageLabel.text = "$page / $count  ·  ${(viewerScale * 100).toInt()}%"
+    }
+
+    private fun zoomIn() = setViewerZoom(viewerScale * 1.25f)
+    private fun zoomOut() = setViewerZoom(viewerScale / 1.25f)
+    private fun fitPage() = setViewerZoom(1f)
+
+    private fun setViewerZoom(value: Float) {
+        viewerScale = value.coerceIn(0.5f, 4.0f)
+        when (currentMode) {
+            ViewerMode.PDF -> {
+                pdfImageView?.scaleX = viewerScale
+                pdfImageView?.scaleY = viewerScale
+                if (pdfPageCount > 0) updatePageLabel(pdfPageIndex + 1, pdfPageCount)
+            }
+            ViewerMode.HWP_ENGINE -> hwpWebView?.evaluateJavascript("window.setHwpZoom && window.setHwpZoom($viewerScale);", null)
+            ViewerMode.TEXT -> {
+                viewerContent.scaleX = viewerScale
+                viewerContent.scaleY = viewerScale
+                if (textPages.isNotEmpty()) updatePageLabel(textPageIndex + 1, textPages.size)
+            }
+            else -> Unit
+        }
     }
 
     private fun enterImmersiveViewer() {
@@ -303,6 +370,10 @@ class MainActivity : Activity() {
         hwpWebView = null
         pdfPageIndex = 0
         pdfPageCount = 0
+        viewerScale = 1f
+        viewerContent.scaleX = 1f
+        viewerContent.scaleY = 1f
+        if (::pageLabel.isInitialized) pageLabel.text = ""
         currentText = ""
         textPages = emptyList()
         textPageIndex = 0
@@ -413,6 +484,7 @@ class MainActivity : Activity() {
             setOnTouchListener { _, event -> handleViewerTouch(event) }
         }
         viewerContent.addView(page, FrameLayout.LayoutParams(-1, -1))
+        updatePageLabel(textPageIndex + 1, textPages.size)
     }
 
     private fun paginateText(value: String): List<String> {

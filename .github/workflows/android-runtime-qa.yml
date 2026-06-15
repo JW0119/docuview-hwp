@@ -20,8 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: ubuntu-api29-x86_64
-            os: ubuntu-latest
+          - name: macos-api29-x86_64
+            os: macos-13
             api-level: 29
             target: default
             arch: x86_64

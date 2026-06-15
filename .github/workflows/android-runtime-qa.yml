@@ -108,8 +108,11 @@ jobs:
           zwrite('docuview-runtime-test.pptx', {
               'ppt/slides/slide1.xml': '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>DocuView PPTX QA</a:t></a:r></a:p><a:p><a:r><a:t>Slide text is visible.</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>'
           })
-          (q/'docuview-runtime-test.hwp').write_bytes('HWP Document File V5.0\0\nDocuView HWP QA\nBinary HWP fallback text is visible.\n한글 HWP 본문 후보가 화면에 보여야 합니다.\n'.encode('utf-16le'))
           PY
+
+          cp qa-fixtures/hwp/grantpilot-sbiz24-notice.hwp qa-input/docuview-runtime-test.hwp
+          file qa-input/docuview-runtime-test.hwp
+          sha256sum qa-input/docuview-runtime-test.hwp
 
       - name: Run emulator, install, launch, screenshot, swipe
         timeout-minutes: 18

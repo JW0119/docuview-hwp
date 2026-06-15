@@ -83,14 +83,26 @@ for attempt in $(seq 1 12); do
 
   if grep -q 'HWP_RENDER_SUCCESS' qa-artifacts/logcat-tail.txt && python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png >> qa-artifacts/hwp-screenshot-check.txt 2>&1; then
     echo "HWP screenshot rendered by engine after ${attempt} attempt(s)" | tee -a qa-artifacts/hwp-screenshot-check.txt
+    # Zoom in, then drag the enlarged page without turning pages. This proves pan/drag
+    # is available separately from horizontal page-turn swipes at fit-page scale.
+    adb shell input tap 520 2350
+    sleep 1
+    adb exec-out screencap -p > qa-artifacts/11-hwp-zoomed.png
+    adb shell input swipe 680 1100 440 1380 450
+    sleep 1
+    adb exec-out screencap -p > qa-artifacts/12-hwp-zoomed-after-pan.png
+    echo "PASS: HWP zoom tap and pan drag screenshot captured." | tee -a qa-artifacts/hwp-screenshot-check.txt
+    adb shell input tap 350 2350
+    sleep 1
+    adb exec-out screencap -p > qa-artifacts/13-hwp-after-fit-page.png
     adb shell input swipe 950 1200 130 1200 350
     sleep 3
-    adb exec-out screencap -p > qa-artifacts/11-hwp-after-left-swipe.png
+    adb exec-out screencap -p > qa-artifacts/14-hwp-after-left-swipe.png
     adb logcat -d -t 1200 > qa-artifacts/logcat-tail.txt
     python3 scripts/check-hwp-runtime-contract.py qa-artifacts > qa-artifacts/hwp-runtime-contract.txt 2>&1
     adb shell input swipe 130 1200 950 1200 350
     sleep 3
-    adb exec-out screencap -p > qa-artifacts/12-hwp-after-right-swipe.png
+    adb exec-out screencap -p > qa-artifacts/15-hwp-after-right-swipe.png
     break
   fi
 

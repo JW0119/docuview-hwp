@@ -53,7 +53,7 @@ def main() -> int:
     artifacts = Path(sys.argv[1])
     log_path = artifacts / "logcat-tail.txt"
     first = artifacts / "10-hwp.png"
-    after_left = artifacts / "11-hwp-after-left-swipe.png"
+    after_left = artifacts / "14-hwp-after-left-swipe.png"
     required = [log_path, first, after_left]
     missing = [str(p) for p in required if not p.exists()]
     if missing:

@@ -11,7 +11,7 @@
     #pageHost { box-sizing:border-box; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; padding:0; overflow:hidden; transform-origin:center center; will-change:transform; }
     .page { box-sizing:border-box; display:flex; align-items:center; justify-content:center; width:100vw; height:100vh; overflow:hidden; background:#111827; }
     .page svg { display:block; max-width:100vw; max-height:100vh; width:auto; height:auto; background:white; box-shadow:0 0 18px rgba(0,0,0,.38); }
-    #badge { position:fixed; right:10px; bottom:62px; z-index:10; padding:5px 8px; border-radius:999px; background:rgba(17,24,39,.58); color:#e5e7eb; font-size:12px; line-height:1; user-select:none; pointer-events:none; }
+    #badge { position:fixed; right:10px; bottom:62px; z-index:10; padding:5px 8px; border-radius:999px; background:rgba(17,24,39,.58); color:#e5e7eb; font-size:12px; line-height:1; user-select:none; pointer-events:none; transition:bottom .12s ease-out, opacity .12s ease-out; }
   </style>
 </head>
 <body>
@@ -118,19 +118,23 @@
       if (!pendingTransformFrame) pendingTransformFrame = requestAnimationFrame(renderTransform);
     }
 
-    window.setHwpZoom = (value) => {
-      const n = Number(value);
+    window.setHwpTransform = (scale, x, y) => {
+      const n = Number(scale);
       zoom = Math.max(0.5, Math.min(4, Number.isFinite(n) ? n : 1));
-      if (zoom <= 1.02) { panX = 0; panY = 0; }
+      const nx = Number(x);
+      const ny = Number(y);
+      panX = zoom <= 1.02 ? 0 : (Number.isFinite(nx) ? nx : 0);
+      panY = zoom <= 1.02 ? 0 : (Number.isFinite(ny) ? ny : 0);
       applyZoom();
     };
 
-    window.setHwpPan = (x, y) => {
-      const nx = Number(x);
-      const ny = Number(y);
-      panX = Number.isFinite(nx) ? nx : 0;
-      panY = Number.isFinite(ny) ? ny : 0;
-      applyZoom();
+    window.setHwpZoom = (value) => window.setHwpTransform(value, panX, panY);
+    window.setHwpPan = (x, y) => window.setHwpTransform(zoom, x, y);
+
+    window.setControlsVisible = (visible) => {
+      const isVisible = visible === true || visible === 'true';
+      badge.style.bottom = isVisible ? '62px' : '12px';
+      badge.style.opacity = isVisible ? '0.72' : '0.9';
     };
 
     function renderPage(index) {
@@ -173,6 +177,7 @@
       const t = event.changedTouches[0];
       const dx = t.clientX - touchStartX;
       const dy = t.clientY - touchStartY;
+      if (zoom > 1.02) return;
       if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.25) nextPage(dx < 0 ? 1 : -1);
     }, { passive: true });
 

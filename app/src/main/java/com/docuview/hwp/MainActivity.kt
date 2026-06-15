@@ -18,6 +18,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.ViewConfiguration
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
@@ -60,6 +61,10 @@ class MainActivity : Activity() {
     private var pendingPanDy = 0f
     private var panFramePosted = false
     private var lastHwpPanFrameMs = 0L
+    private var controlBarVisible = true
+    private var touchSlop = 8
+    private var suppressTapToggle = false
+    private var pinchInProgress = false
     private lateinit var recentBox: LinearLayout
 
     private var currentName: String = ""
@@ -75,6 +80,8 @@ class MainActivity : Activity() {
     private var pdfImageView: ImageView? = null
 
     private var hwpWebView: WebView? = null
+    private var hwpPageIndex = 0
+    private var hwpPageCount = 0
 
     private val recentPrefs by lazy { getSharedPreferences("recent_documents", Context.MODE_PRIVATE) }
 
@@ -103,11 +110,30 @@ class MainActivity : Activity() {
         buildHome()
         buildViewer()
         scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-            override fun onScale(detector: ScaleGestureDetector): Boolean {
-                setViewerZoom(viewerScale * detector.scaleFactor)
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                pinchInProgress = true
+                suppressTapToggle = true
                 return true
             }
+
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                setViewerZoom(
+                    viewerScale * detector.scaleFactor,
+                    detector.focusX - viewerLayer.width / 2f,
+                    detector.focusY - viewerLayer.height / 2f,
+                    resetAtMin = false
+                )
+                return true
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                pinchInProgress = false
+                if (viewerScale <= 1.02f) setViewerZoom(1f, resetAtMin = true)
+                lastTouchX = detector.focusX
+                lastTouchY = detector.focusY
+            }
         })
+        touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         root.addView(homeBox, FrameLayout.LayoutParams(-1, -1))
         root.addView(viewerLayer, FrameLayout.LayoutParams(-1, -1))
         viewerLayer.visibility = View.GONE
@@ -178,8 +204,9 @@ class MainActivity : Activity() {
 
     private fun handleViewerTouch(event: MotionEvent): Boolean {
         scaleGestureDetector.onTouchEvent(event)
-        if (event.pointerCount > 1 || scaleGestureDetector.isInProgress) {
+        if (event.pointerCount > 1 || scaleGestureDetector.isInProgress || pinchInProgress) {
             isPanning = viewerScale > 1.02f
+            suppressTapToggle = true
             return true
         }
         when (event.actionMasked) {
@@ -189,13 +216,28 @@ class MainActivity : Activity() {
                 lastTouchX = event.x
                 lastTouchY = event.y
                 isPanning = false
+                suppressTapToggle = isTouchInsideControlBar(event)
+                return true
+            }
+            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_POINTER_DOWN -> {
+                val index = if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
+                    if (event.actionIndex == 0 && event.pointerCount > 1) 1 else 0
+                } else 0
+                lastTouchX = event.getX(index)
+                lastTouchY = event.getY(index)
+                swipeStartX = lastTouchX
+                swipeStartY = lastTouchY
+                suppressTapToggle = true
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                val totalDx = event.x - swipeStartX
+                val totalDy = event.y - swipeStartY
+                if (abs(totalDx) > touchSlop || abs(totalDy) > touchSlop) suppressTapToggle = true
                 if (viewerScale > 1.02f) {
                     val dx = event.x - lastTouchX
                     val dy = event.y - lastTouchY
-                    if (abs(event.x - swipeStartX) > dp(3) || abs(event.y - swipeStartY) > dp(3)) isPanning = true
+                    if (abs(totalDx) > touchSlop || abs(totalDy) > touchSlop) isPanning = true
                     panBy(dx, dy)
                     lastTouchX = event.x
                     lastTouchY = event.y
@@ -205,14 +247,43 @@ class MainActivity : Activity() {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val dx = event.x - swipeStartX
                 val dy = event.y - swipeStartY
+                val isTap = !suppressTapToggle && abs(dx) <= touchSlop && abs(dy) <= touchSlop
+                if (event.actionMasked == MotionEvent.ACTION_UP && isTap) {
+                    toggleControlBar()
+                    isPanning = false
+                    return true
+                }
                 if (!isPanning && viewerScale <= 1.02f && abs(dx) > dp(56) && abs(dx) > abs(dy) * 1.35f) {
                     if (dx < 0) nextPage() else previousPage()
                     return true
                 }
                 isPanning = false
+                suppressTapToggle = false
             }
         }
         return true
+    }
+
+    private fun isTouchInsideControlBar(event: MotionEvent): Boolean {
+        if (!controlBarVisible || controlBar.visibility != View.VISIBLE) return false
+        val barTop = viewerLayer.height - controlBar.height
+        return event.y >= barTop
+    }
+
+    private fun toggleControlBar() = setControlBarVisible(!controlBarVisible)
+
+    private fun setControlBarVisible(visible: Boolean) {
+        controlBarVisible = visible
+        controlBar.animate().cancel()
+        if (visible) {
+            controlBar.visibility = View.VISIBLE
+            controlBar.animate().alpha(1f).translationY(0f).setDuration(120).start()
+        } else {
+            controlBar.animate().alpha(0f).translationY(controlBar.height.toFloat()).setDuration(120).withEndAction {
+                if (!controlBarVisible) controlBar.visibility = View.GONE
+            }.start()
+        }
+        hwpWebView?.evaluateJavascript("window.setControlsVisible && window.setControlsVisible(${if (visible) "true" else "false"});", null)
     }
 
     private fun openDocumentPicker() {
@@ -359,10 +430,24 @@ class MainActivity : Activity() {
         setViewerZoom(1f)
     }
 
-    private fun setViewerZoom(value: Float) {
+    private fun setViewerZoom(
+        value: Float,
+        focusXFromCenter: Float = 0f,
+        focusYFromCenter: Float = 0f,
+        resetAtMin: Boolean = true
+    ) {
         val oldScale = viewerScale
-        viewerScale = value.coerceIn(0.5f, 4.0f)
-        if (viewerScale <= 1.02f) resetPan() else if (oldScale <= 1.02f) applyPan()
+        val newScale = value.coerceIn(0.5f, 4.0f)
+        if (newScale == oldScale) return
+        viewerScale = newScale
+        if (oldScale > 0f && newScale > 1.02f) {
+            val ratio = newScale / oldScale
+            panX = focusXFromCenter + (panX - focusXFromCenter) * ratio
+            panY = focusYFromCenter + (panY - focusYFromCenter) * ratio
+            clampPan()
+        } else if (resetAtMin && newScale <= 1.02f) {
+            resetPan()
+        }
         when (currentMode) {
             ViewerMode.PDF -> {
                 pdfImageView?.scaleX = viewerScale
@@ -371,8 +456,8 @@ class MainActivity : Activity() {
                 if (pdfPageCount > 0) updatePageLabel(pdfPageIndex + 1, pdfPageCount)
             }
             ViewerMode.HWP_ENGINE -> {
-                hwpWebView?.evaluateJavascript("window.setHwpZoom && window.setHwpZoom($viewerScale);", null)
-                if (viewerScale <= 1.02f) hwpWebView?.evaluateJavascript("window.setHwpPan && window.setHwpPan(0, 0);", null)
+                applyHwpTransform(force = true)
+                if (hwpPageCount > 0) updatePageLabel(hwpPageIndex + 1, hwpPageCount)
             }
             ViewerMode.TEXT -> {
                 viewerContent.scaleX = viewerScale
@@ -382,6 +467,18 @@ class MainActivity : Activity() {
             }
             else -> Unit
         }
+    }
+
+    private fun clampPan() {
+        if (viewerScale <= 1.02f) {
+            panX = 0f
+            panY = 0f
+            return
+        }
+        val maxX = ((viewerContent.width.coerceAtLeast(resources.displayMetrics.widthPixels) * (viewerScale - 1f)) / 2f).coerceAtLeast(0f)
+        val maxY = ((viewerContent.height.coerceAtLeast(resources.displayMetrics.heightPixels) * (viewerScale - 1f)) / 2f).coerceAtLeast(0f)
+        panX = panX.coerceIn(-maxX, maxX)
+        panY = panY.coerceIn(-maxY, maxY)
     }
 
     private fun panBy(dx: Float, dy: Float) {
@@ -403,10 +500,9 @@ class MainActivity : Activity() {
 
     private fun applyPanDelta(dx: Float, dy: Float) {
         if (viewerScale <= 1.02f) return
-        val maxX = ((viewerContent.width.coerceAtLeast(resources.displayMetrics.widthPixels) * (viewerScale - 1f)) / 2f).coerceAtLeast(0f)
-        val maxY = ((viewerContent.height.coerceAtLeast(resources.displayMetrics.heightPixels) * (viewerScale - 1f)) / 2f).coerceAtLeast(0f)
-        panX = (panX + dx).coerceIn(-maxX, maxX)
-        panY = (panY + dy).coerceIn(-maxY, maxY)
+        panX += dx
+        panY += dy
+        clampPan()
         applyPan()
     }
 
@@ -430,14 +526,16 @@ class MainActivity : Activity() {
                 viewerContent.translationX = panX
                 viewerContent.translationY = panY
             }
-            ViewerMode.HWP_ENGINE -> {
-                val now = android.os.SystemClock.uptimeMillis()
-                if (now - lastHwpPanFrameMs >= 12L || panX == 0f && panY == 0f) {
-                    lastHwpPanFrameMs = now
-                    hwpWebView?.evaluateJavascript("window.setHwpPan && window.setHwpPan($panX, $panY);", null)
-                }
-            }
+            ViewerMode.HWP_ENGINE -> applyHwpTransform()
             else -> Unit
+        }
+    }
+
+    private fun applyHwpTransform(force: Boolean = false) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (force || now - lastHwpPanFrameMs >= 12L || panX == 0f && panY == 0f) {
+            lastHwpPanFrameMs = now
+            hwpWebView?.evaluateJavascript("window.setHwpTransform && window.setHwpTransform($viewerScale, $panX, $panY);", null)
         }
     }
 
@@ -542,9 +640,19 @@ class MainActivity : Activity() {
         }
         @JavascriptInterface fun onRendered(pageCount: String) {
             Log.i("DocuViewHwp", "HWP_RENDER_SUCCESS: pages=$pageCount source=$sourceUri")
+            runOnUiThread {
+                hwpPageCount = pageCount.toIntOrNull() ?: hwpPageCount
+                if (hwpPageCount > 0) updatePageLabel(hwpPageIndex + 1, hwpPageCount)
+            }
         }
         @JavascriptInterface fun onPageChanged(page: String, pageCount: String) {
             Log.i("DocuViewHwp", "HWP_PAGE_CHANGED: page=$page pages=$pageCount source=$sourceUri")
+            runOnUiThread {
+                hwpPageIndex = (page.toIntOrNull() ?: 1).coerceAtLeast(1) - 1
+                hwpPageCount = pageCount.toIntOrNull() ?: hwpPageCount
+                resetPan()
+                if (hwpPageCount > 0) updatePageLabel(hwpPageIndex + 1, hwpPageCount)
+            }
         }
         @JavascriptInterface fun onFailed(message: String) {
             Log.e("DocuViewHwp", "HWP_RENDER_FAILED: $message source=$sourceUri")

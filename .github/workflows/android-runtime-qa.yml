@@ -183,13 +183,24 @@ jobs:
             adb exec-out screencap -p > qa-artifacts/09-pptx.png
 
             adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.hwp -t application/vnd.hancom.hwp -p com.docuview.hwp.nativeviewer
-            sleep 4
-            adb exec-out screencap -p > qa-artifacts/10-hwp.png
+            for attempt in $(seq 1 12); do
+              sleep 5
+              adb exec-out screencap -p > qa-artifacts/10-hwp.png
+              if python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png > qa-artifacts/hwp-screenshot-check.txt 2>&1; then
+                echo "HWP screenshot visible after ${attempt} attempt(s)" | tee -a qa-artifacts/hwp-screenshot-check.txt
+                break
+              fi
+              if [ "$attempt" = "12" ]; then
+                adb logcat -d -t 800 > qa-artifacts/logcat-tail.txt || true
+                adb shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' > qa-artifacts/window-focus.txt || true
+                cat qa-artifacts/hwp-screenshot-check.txt
+                exit 1
+              fi
+            done
 
             adb shell pidof com.docuview.hwp.nativeviewer > qa-artifacts/app.pid
             adb shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' > qa-artifacts/window-focus.txt || true
-            adb logcat -d -t 400 > qa-artifacts/logcat-tail.txt
-            python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png
+            adb logcat -d -t 800 > qa-artifacts/logcat-tail.txt
 
       - name: Upload runtime QA artifacts
         if: always()

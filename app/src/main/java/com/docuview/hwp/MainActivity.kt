@@ -359,21 +359,23 @@ class MainActivity : Activity() {
             hwpWebView = webView
             viewerContent.addView(webView, FrameLayout.LayoutParams(-1, -1))
             webView.loadUrl("file:///android_asset/rhwp/viewer.html")
-        }.onFailure {
-            val fallback = runCatching { extractBinaryHwpText(uri) }.getOrDefault("")
-            if (fallback.isNotBlank()) showTextViewer(fallback)
-            else showViewerMessage("HWP 문서를 렌더링할 수 없습니다.", false)
+        }.onFailure { error ->
+            Log.e("DocuViewHwp", "HWP_RENDER_FAILED: WebView setup failed", error)
+            showViewerMessage("HWP 렌더링 엔진을 시작하지 못했습니다.\n${error.message ?: "unknown error"}", false)
         }
     }
 
     inner class HwpRenderBridge(private val sourceUri: Uri) {
-        @JavascriptInterface fun onStatus(message: String) { }
-        @JavascriptInterface fun onRendered(pageCount: String) { }
+        @JavascriptInterface fun onStatus(message: String) {
+            Log.d("DocuViewHwp", "HWP_RENDER_STATUS: $message")
+        }
+        @JavascriptInterface fun onRendered(pageCount: String) {
+            Log.i("DocuViewHwp", "HWP_RENDER_SUCCESS: pages=$pageCount source=$sourceUri")
+        }
         @JavascriptInterface fun onFailed(message: String) {
+            Log.e("DocuViewHwp", "HWP_RENDER_FAILED: $message source=$sourceUri")
             runOnUiThread {
-                val fallback = runCatching { extractBinaryHwpText(sourceUri) }.getOrDefault("")
-                if (fallback.isNotBlank()) showTextViewer(fallback)
-                else showViewerMessage("HWP 렌더링 엔진이 문서를 표시하지 못했습니다.\n$message", false)
+                showViewerMessage("HWP 렌더링 엔진이 문서를 표시하지 못했습니다.\n$message", false)
             }
         }
     }

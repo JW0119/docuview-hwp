@@ -56,16 +56,29 @@ adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docu
 sleep 4
 adb exec-out screencap -p > qa-artifacts/09-pptx.png
 
+adb logcat -c || true
 adb shell am start -a android.intent.action.VIEW -d file:///sdcard/Download/docuview-runtime-test.hwp -t application/vnd.hancom.hwp -p com.docuview.hwp.nativeviewer
 for attempt in $(seq 1 12); do
   sleep 5
   adb exec-out screencap -p > qa-artifacts/10-hwp.png
-  if python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png > qa-artifacts/hwp-screenshot-check.txt 2>&1; then
-    echo "HWP screenshot visible after ${attempt} attempt(s)" | tee -a qa-artifacts/hwp-screenshot-check.txt
+  adb logcat -d -t 1200 > qa-artifacts/logcat-tail.txt || true
+  python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png > qa-artifacts/hwp-screenshot-check.txt 2>&1 || true
+
+  if grep -q 'HWP_RENDER_FAILED' qa-artifacts/logcat-tail.txt; then
+    echo "FAIL: HWP engine reported render failure." | tee -a qa-artifacts/hwp-screenshot-check.txt
+    grep 'HWP_RENDER_FAILED' qa-artifacts/logcat-tail.txt | tail -20 | tee -a qa-artifacts/hwp-screenshot-check.txt
+    adb shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' > qa-artifacts/window-focus.txt || true
+    cat qa-artifacts/hwp-screenshot-check.txt
+    exit 1
+  fi
+
+  if grep -q 'HWP_RENDER_SUCCESS' qa-artifacts/logcat-tail.txt && python3 scripts/check-hwp-screenshot.py qa-artifacts/10-hwp.png >> qa-artifacts/hwp-screenshot-check.txt 2>&1; then
+    echo "HWP screenshot rendered by engine after ${attempt} attempt(s)" | tee -a qa-artifacts/hwp-screenshot-check.txt
     break
   fi
+
   if [ "$attempt" = "12" ]; then
-    adb logcat -d -t 1200 > qa-artifacts/logcat-tail.txt || true
+    echo "FAIL: HWP engine did not report HWP_RENDER_SUCCESS." | tee -a qa-artifacts/hwp-screenshot-check.txt
     adb shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' > qa-artifacts/window-focus.txt || true
     cat qa-artifacts/hwp-screenshot-check.txt
     exit 1

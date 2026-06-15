@@ -20,8 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macos-api29-x86_64
-            os: macos-13
+          - name: ubuntu-api29-x86_64
+            os: ubuntu-latest
             api-level: 29
             target: default
             arch: x86_64
@@ -40,6 +40,8 @@ jobs:
         run: |
           uname -a
           sysctl -a 2>/dev/null | grep -E 'machdep.cpu.features|VMX|SVM' || true
+          ls -l /dev/kvm 2>/dev/null || true
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
           ls -l /dev/kvm 2>/dev/null || true
 
       - name: Build debug and release APKs

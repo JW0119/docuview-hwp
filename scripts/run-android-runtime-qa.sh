@@ -85,14 +85,14 @@ for attempt in $(seq 1 12); do
     echo "HWP screenshot rendered by engine after ${attempt} attempt(s)" | tee -a qa-artifacts/hwp-screenshot-check.txt
     # Zoom in, then drag the enlarged page without turning pages. This proves pan/drag
     # is available separately from horizontal page-turn swipes at fit-page scale.
-    adb shell input tap 520 2350
+    adb shell input tap 520 2220
     sleep 1
     adb exec-out screencap -p > qa-artifacts/11-hwp-zoomed.png
     adb shell input swipe 760 1350 420 1350 450
     sleep 1
     adb exec-out screencap -p > qa-artifacts/12-hwp-zoomed-after-pan.png
     echo "PASS: HWP zoom tap and pan drag screenshot captured." | tee -a qa-artifacts/hwp-screenshot-check.txt
-    adb shell input tap 350 2350
+    adb shell input tap 350 2220
     sleep 1
     adb exec-out screencap -p > qa-artifacts/13-hwp-after-fit-page.png
     adb shell input swipe 950 1200 130 1200 350

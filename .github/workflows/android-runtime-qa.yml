@@ -2,14 +2,10 @@ name: Android Runtime QA
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'app/**'
-      - 'build.gradle.kts'
-      - 'settings.gradle.kts'
-      - 'gradle/**'
-      - 'gradlew'
-      - '.github/workflows/android-runtime-qa.yml'
+
+# Runtime QA launches an Android emulator and produces screenshots. Keep it
+# manual to avoid repeated GitHub failure-notification emails during iterative
+# fixes; run it explicitly before reporting a viewer build as verified.
 
 jobs:
   emulator-screenshot-qa:

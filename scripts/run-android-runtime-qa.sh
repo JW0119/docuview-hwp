@@ -88,7 +88,7 @@ for attempt in $(seq 1 12); do
     adb shell input tap 520 2350
     sleep 1
     adb exec-out screencap -p > qa-artifacts/11-hwp-zoomed.png
-    adb shell input swipe 680 1100 440 1380 450
+    adb shell input swipe 760 1350 420 1350 450
     sleep 1
     adb exec-out screencap -p > qa-artifacts/12-hwp-zoomed-after-pan.png
     echo "PASS: HWP zoom tap and pan drag screenshot captured." | tee -a qa-artifacts/hwp-screenshot-check.txt
